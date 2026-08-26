@@ -85,7 +85,7 @@ jobs:
 
       # Step 12: Upload coverage artifact for inspection
       - name: Upload coverage report artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: backend-coverage-report
           path: backend/coverage.xml
