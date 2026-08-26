@@ -12,6 +12,6 @@ python-multipart>=0.0.9
 ruff>=0.2.0
 black>=24.1.0
 mypy>=1.8.0
-vulture>=2.11
+vulture>=2.16
 radon>=6.0.1
 pip-audit>=2.7.0
