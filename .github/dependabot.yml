@@ -1,22 +1,22 @@
 version: 2
 updates:
-  # Maintain dependencies for GitHub Actions workflows
+  # GitHub Actions updates (disabled automatic PR creation)
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 0
 
-  # Maintain Python backend dependencies in backend/requirements.txt
+  # Python backend updates (disabled automatic PR creation)
   - package-ecosystem: "pip"
     directory: "/backend"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 0
 
-  # Maintain Node frontend dependencies in frontend/package.json
+  # Node frontend updates (disabled automatic PR creation)
   - package-ecosystem: "npm"
     directory: "/frontend"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 0
