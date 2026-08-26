@@ -69,7 +69,7 @@ jobs:
 
       # Step 10: Secret scanning to prevent hardcoded credentials
       - name: Scan repository for hardcoded secrets
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
