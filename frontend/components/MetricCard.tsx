@@ -3,12 +3,12 @@
 import { LucideIcon } from "lucide-react";
 
 interface MetricCardProps {
-  title: str;
-  value: str | number;
-  subtitle?: str;
+  title: string;
+  value: string | number;
+  subtitle?: string;
   icon: LucideIcon;
   trend?: "up" | "down" | "neutral";
-  color?: str;
+  color?: string;
 }
 
 export default function MetricCard({
