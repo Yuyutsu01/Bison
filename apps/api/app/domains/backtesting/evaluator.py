@@ -36,6 +36,8 @@ class RuleEvaluator:
             return all(results)
         elif rule_group.operator == LogicalOperator.OR:
             return any(results)
+        elif rule_group.operator == LogicalOperator.NOT:
+            return not any(results)
         return False
 
     @classmethod

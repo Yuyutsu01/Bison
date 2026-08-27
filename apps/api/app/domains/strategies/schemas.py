@@ -37,6 +37,7 @@ class Operator(str, Enum):
 class LogicalOperator(str, Enum):
     AND = "AND"
     OR = "OR"
+    NOT = "NOT"
 
 
 class OperandType(str, Enum):
