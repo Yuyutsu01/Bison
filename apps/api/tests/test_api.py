@@ -4,8 +4,9 @@ from sqlalchemy import create_engine
 from app.main import app
 from app.db.base import Base
 
-# Ensure SQLite tables exist for testing
+# Ensure SQLite tables exist for testing in a fresh clean state
 engine = create_engine("sqlite:///./bison.db")
+Base.metadata.drop_all(bind=engine)
 Base.metadata.create_all(bind=engine)
 
 client = TestClient(app)

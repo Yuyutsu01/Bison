@@ -1,76 +1,124 @@
 """
-Quantitative Indicator Engine.
+Quantitative Indicator Engine & Concrete Indicator Classes.
 
-Calculates technical analysis indicators (SMA, EMA, RSI, MACD, Bollinger Bands, ATR)
-over OHLCV price time series data with precision and zero look-ahead bias.
+Implements SMA, EMA, RSI, MACD, Bollinger Bands, and ATR indicators
+with strict parameter validation, warm-up handling, and batch/streaming execution.
 """
 
-from typing import Dict, Any, List
+from typing import Dict, Any, Union
 import pandas as pd
 import numpy as np
+from app.domains.indicators.base import BaseIndicator
 
 
-class IndicatorEngine:
-    """Calculates quantitative technical indicators on pandas DataFrame containing OHLCV candles."""
+class SMAIndicator(BaseIndicator):
+    @property
+    def name(self) -> str:
+        return "SMA"
 
-    @staticmethod
-    def calculate_sma(df: pd.DataFrame, period: int = 20, column: str = "close") -> pd.Series:
-        """Simple Moving Average: arithmetic mean over rolling window of size `period`."""
-        if column not in df.columns:
-            raise KeyError(f"Column '{column}' not found in DataFrame.")
+    @property
+    def warm_up_bars(self) -> int:
+        return self.parameters.get("period", 20)
+
+    def validate_params(self) -> None:
+        period = self.parameters.get("period", 20)
+        if not isinstance(period, int) or period <= 0:
+            raise ValueError(f"SMA period must be a positive integer > 0, got {period}.")
+
+    def calculate_batch(self, df: pd.DataFrame) -> pd.Series:
+        period = self.parameters.get("period", 20)
+        column = self.parameters.get("column", "close")
         return df[column].rolling(window=period, min_periods=period).mean()
 
-    @staticmethod
-    def calculate_ema(df: pd.DataFrame, period: int = 20, column: str = "close") -> pd.Series:
-        """Exponential Moving Average: weighted average with decay factor alpha = 2 / (period + 1)."""
-        if column not in df.columns:
-            raise KeyError(f"Column '{column}' not found in DataFrame.")
+
+class EMAIndicator(BaseIndicator):
+    @property
+    def name(self) -> str:
+        return "EMA"
+
+    @property
+    def warm_up_bars(self) -> int:
+        return self.parameters.get("period", 20)
+
+    def validate_params(self) -> None:
+        period = self.parameters.get("period", 20)
+        if not isinstance(period, int) or period <= 0:
+            raise ValueError(f"EMA period must be a positive integer > 0, got {period}.")
+
+    def calculate_batch(self, df: pd.DataFrame) -> pd.Series:
+        period = self.parameters.get("period", 20)
+        column = self.parameters.get("column", "close")
         return df[column].ewm(span=period, adjust=False, min_periods=period).mean()
 
-    @staticmethod
-    def calculate_rsi(df: pd.DataFrame, period: int = 14, column: str = "close") -> pd.Series:
-        """
-        Relative Strength Index (RSI):
-        Measures speed and change of price movements on a scale from 0 to 100.
-        Uses Wilder's Exponential Smoothing method for gain and loss averages.
-        """
-        if column not in df.columns:
-            raise KeyError(f"Column '{column}' not found in DataFrame.")
+
+class RSIIndicator(BaseIndicator):
+    @property
+    def name(self) -> str:
+        return "RSI"
+
+    @property
+    def warm_up_bars(self) -> int:
+        return self.parameters.get("period", 14) + 1
+
+    def validate_params(self) -> None:
+        period = self.parameters.get("period", 14)
+        if not isinstance(period, int) or period <= 0:
+            raise ValueError(f"RSI period must be a positive integer > 0, got {period}.")
+
+    def calculate_batch(self, df: pd.DataFrame) -> pd.Series:
+        period = self.parameters.get("period", 14)
+        column = self.parameters.get("column", "close")
 
         delta = df[column].diff()
         gain = delta.clip(lower=0.0)
         loss = -1.0 * delta.clip(upper=0.0)
 
-        # Wilder's Exponential Smoothing (alpha = 1 / period)
         avg_gain = gain.ewm(alpha=1.0/period, adjust=False, min_periods=period).mean()
         avg_loss = loss.ewm(alpha=1.0/period, adjust=False, min_periods=period).mean()
 
         rs = avg_gain / (avg_loss.replace(0.0, np.nan))
         rsi = 100.0 - (100.0 / (1.0 + rs))
-
-        # Handle zero loss case (RSI = 100)
         rsi = rsi.fillna(100.0)
-        # Handle early warm-up NaN values
         rsi.iloc[:period] = np.nan
         return rsi
 
-    @staticmethod
-    def calculate_macd(
-        df: pd.DataFrame,
-        fast_period: int = 12,
-        slow_period: int = 26,
-        signal_period: int = 9,
-        column: str = "close"
-    ) -> Dict[str, pd.Series]:
-        """
-        MACD (Moving Average Convergence Divergence):
-        Returns dict containing 'macd', 'signal', and 'histogram' series.
-        """
-        fast_ema = IndicatorEngine.calculate_ema(df, period=fast_period, column=column)
-        slow_ema = IndicatorEngine.calculate_ema(df, period=slow_period, column=column)
+
+class MACDIndicator(BaseIndicator):
+    @property
+    def name(self) -> str:
+        return "MACD"
+
+    @property
+    def warm_up_bars(self) -> int:
+        slow = self.parameters.get("slow_period", 26)
+        signal = self.parameters.get("signal_period", 9)
+        return slow + signal
+
+    def validate_params(self) -> None:
+        fast = self.parameters.get("fast_period", 12)
+        slow = self.parameters.get("slow_period", 26)
+        signal = self.parameters.get("signal_period", 9)
+
+        if not isinstance(fast, int) or fast <= 0:
+            raise ValueError("MACD fast_period must be > 0.")
+        if not isinstance(slow, int) or slow <= 0:
+            raise ValueError("MACD slow_period must be > 0.")
+        if not isinstance(signal, int) or signal <= 0:
+            raise ValueError("MACD signal_period must be > 0.")
+        if fast >= slow:
+            raise ValueError(f"MACD fast_period ({fast}) must be strictly less than slow_period ({slow}).")
+
+    def calculate_batch(self, df: pd.DataFrame) -> Dict[str, pd.Series]:
+        fast = self.parameters.get("fast_period", 12)
+        slow = self.parameters.get("slow_period", 26)
+        signal = self.parameters.get("signal_period", 9)
+        column = self.parameters.get("column", "close")
+
+        fast_ema = df[column].ewm(span=fast, adjust=False, min_periods=fast).mean()
+        slow_ema = df[column].ewm(span=slow, adjust=False, min_periods=slow).mean()
 
         macd_line = fast_ema - slow_ema
-        signal_line = macd_line.ewm(span=signal_period, adjust=False, min_periods=signal_period).mean()
+        signal_line = macd_line.ewm(span=signal, adjust=False, min_periods=signal).mean()
         histogram = macd_line - signal_line
 
         return {
@@ -79,39 +127,59 @@ class IndicatorEngine:
             "histogram": histogram
         }
 
-    @staticmethod
-    def calculate_bollinger_bands(
-        df: pd.DataFrame,
-        period: int = 20,
-        std_dev: float = 2.0,
-        column: str = "close"
-    ) -> Dict[str, pd.Series]:
-        """
-        Bollinger Bands:
-        Returns dict with 'middle' (SMA), 'upper', and 'lower' band series.
-        """
-        middle_band = IndicatorEngine.calculate_sma(df, period=period, column=column)
+
+class BollingerBandsIndicator(BaseIndicator):
+    @property
+    def name(self) -> str:
+        return "BB"
+
+    @property
+    def warm_up_bars(self) -> int:
+        return self.parameters.get("period", 20)
+
+    def validate_params(self) -> None:
+        period = self.parameters.get("period", 20)
+        std_dev = self.parameters.get("std_dev", 2.0)
+
+        if not isinstance(period, int) or period <= 0:
+            raise ValueError("Bollinger Bands period must be > 0.")
+        if not isinstance(std_dev, (int, float)) or std_dev <= 0:
+            raise ValueError("Bollinger Bands std_dev must be > 0.")
+
+    def calculate_batch(self, df: pd.DataFrame) -> Dict[str, pd.Series]:
+        period = self.parameters.get("period", 20)
+        std_dev = self.parameters.get("std_dev", 2.0)
+        column = self.parameters.get("column", "close")
+
+        middle = df[column].rolling(window=period, min_periods=period).mean()
         rolling_std = df[column].rolling(window=period, min_periods=period).std()
 
-        upper_band = middle_band + (std_dev * rolling_std)
-        lower_band = middle_band - (std_dev * rolling_std)
+        upper = middle + (std_dev * rolling_std)
+        lower = middle - (std_dev * rolling_std)
 
         return {
-            "middle": middle_band,
-            "upper": upper_band,
-            "lower": lower_band
+            "middle": middle,
+            "upper": upper,
+            "lower": lower
         }
 
-    @staticmethod
-    def calculate_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
-        """
-        Average True Range (ATR):
-        Measures market volatility based on high, low, and previous close prices.
-        """
-        required_cols = {"high", "low", "close"}
-        if not required_cols.issubset(df.columns):
-            raise KeyError(f"DataFrame missing required OHLC columns: {required_cols - set(df.columns)}")
 
+class ATRIndicator(BaseIndicator):
+    @property
+    def name(self) -> str:
+        return "ATR"
+
+    @property
+    def warm_up_bars(self) -> int:
+        return self.parameters.get("period", 14) + 1
+
+    def validate_params(self) -> None:
+        period = self.parameters.get("period", 14)
+        if not isinstance(period, int) or period <= 0:
+            raise ValueError("ATR period must be > 0.")
+
+    def calculate_batch(self, df: pd.DataFrame) -> pd.Series:
+        period = self.parameters.get("period", 14)
         high = df["high"]
         low = df["low"]
         prev_close = df["close"].shift(1)
@@ -122,7 +190,34 @@ class IndicatorEngine:
 
         true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
 
-        # Wilder's smoothing for ATR
         atr = true_range.ewm(alpha=1.0/period, adjust=False, min_periods=period).mean()
         atr.iloc[:period] = np.nan
         return atr
+
+
+class IndicatorEngine:
+    """Static wrapper helper providing simplified batch calculation methods for all indicators."""
+
+    @staticmethod
+    def calculate_sma(df: pd.DataFrame, period: int = 20, column: str = "close") -> pd.Series:
+        return SMAIndicator({"period": period, "column": column}).calculate_batch(df)
+
+    @staticmethod
+    def calculate_ema(df: pd.DataFrame, period: int = 20, column: str = "close") -> pd.Series:
+        return EMAIndicator({"period": period, "column": column}).calculate_batch(df)
+
+    @staticmethod
+    def calculate_rsi(df: pd.DataFrame, period: int = 14, column: str = "close") -> pd.Series:
+        return RSIIndicator({"period": period, "column": column}).calculate_batch(df)
+
+    @staticmethod
+    def calculate_macd(df: pd.DataFrame, fast_period: int = 12, slow_period: int = 26, signal_period: int = 9, column: str = "close") -> Dict[str, pd.Series]:
+        return MACDIndicator({"fast_period": fast_period, "slow_period": slow_period, "signal_period": signal_period, "column": column}).calculate_batch(df)
+
+    @staticmethod
+    def calculate_bollinger_bands(df: pd.DataFrame, period: int = 20, std_dev: float = 2.0, column: str = "close") -> Dict[str, pd.Series]:
+        return BollingerBandsIndicator({"period": period, "std_dev": std_dev, "column": column}).calculate_batch(df)
+
+    @staticmethod
+    def calculate_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
+        return ATRIndicator({"period": period}).calculate_batch(df)
