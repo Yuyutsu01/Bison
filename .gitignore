@@ -1,24 +1,66 @@
-# Byte-compiled / optimized / DLL files
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
 
-# Pytest
-.pytest_cache/
+# Node.js
+node_modules/
+.next/
+out/
+dist/
+.cache/
+.parcel-cache/
+.yarn/
+.pnp
+.pnp.js
+coverage/
+*.lcov
 
-# Data cache (except sample data)
-backend/data/*.csv
-!backend/data/AAPL.csv
-!backend/data/MSFT.csv
-!backend/data/SPY.csv
+# Environment & Secrets
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.pem
 
-# Node & Next.js
-frontend/node_modules/
-frontend/.next/
-frontend/out/
-
-# IDE & OS files
+# IDE & OS
+.idea/
+.vscode/
+*.swp
+*.swo
 .DS_Store
 Thumbs.db
-.vscode/
-.idea/
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.vitest/
+
+# Database & Logs
+*.log
+*.sqlite3
+*.db
+docker_data/

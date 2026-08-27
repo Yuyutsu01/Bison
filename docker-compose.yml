@@ -1,29 +1,83 @@
 version: '3.8'
 
 services:
-  backend:
+  db:
+    image: postgres:15-alpine
+    container_name: bison_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: bison_user
+      POSTGRES_PASSWORD: bison_password
+      POSTGRES_DB: bison_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bison_user -d bison_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: bison_redis
+    restart: always
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
     build:
-      context: ./backend
+      context: ./apps/api
       dockerfile: Dockerfile
+    container_name: bison_api
+    restart: always
     ports:
       - "8000:8000"
     environment:
-      - PYTHONUNBUFFERED=1
-    volumes:
-      - ./backend/data:/app/data
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
+      - DATABASE_URL=postgresql+asyncpg://bison_user:bison_password@db:5432/bison_db
+      - REDIS_URL=redis://redis:6379/0
+      - SECRET_KEY=super-secret-development-key-change-in-production-1234567890
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
-  frontend:
+  worker:
     build:
-      context: ./frontend
+      context: ./apps/api
       dockerfile: Dockerfile
+    container_name: bison_worker
+    restart: always
+    command: python -m app.domains.jobs.worker
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://bison_user:bison_password@db:5432/bison_db
+      - REDIS_URL=redis://redis:6379/0
+      - SECRET_KEY=super-secret-development-key-change-in-production-1234567890
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+    container_name: bison_web
+    restart: always
     ports:
       - "3000:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://backend:8000
+      - NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
     depends_on:
-      - backend
+      - api
+
+volumes:
+  postgres_data:
