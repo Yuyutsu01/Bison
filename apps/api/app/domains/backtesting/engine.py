@@ -3,17 +3,24 @@ Deterministic Event-Driven Backtesting Simulator Engine.
 
 Executes rule-based quantitative trading strategies on historical OHLCV data.
 Enforces zero look-ahead bias (orders generated on bar t execute strictly on bar t+1 Open).
-Models Indian market transaction costs, slippage, position sizing, and risk rules.
+Integrates Order Domain Factory, Execution Simulator, and Indian market transaction costs.
 """
 
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
+from decimal import Decimal
 import pandas as pd
 import numpy as np
 
 from app.domains.strategies.schemas import StrategyDSL, PositionSizingType
 from app.domains.indicators.calculator import IndicatorEngine
-from app.domains.backtesting.costs import IndianTransactionCostCalculator, CostModelConfig
+from app.domains.signals.models import Signal, SignalType
+from app.domains.orders.models import Order, OrderStatus
+from app.domains.orders.factory import OrderFactory
+from app.domains.execution.models import Execution
+from app.domains.execution.simulator import ExecutionSimulator
+from app.domains.execution.slippage import SlippageModel, FixedPointsSlippage, PercentageSlippage, ZeroSlippage
+from app.domains.backtesting.costs import IndianTransactionCostCalculator, CostModelConfig, SlippageType
 from app.domains.backtesting.evaluator import RuleEvaluator
 
 
@@ -59,6 +66,8 @@ class BacktestResult:
     profit_factor: float
     max_drawdown_percent: float
     sharpe_ratio: float
+    orders: List[Order] = field(default_factory=list)
+    executions: List[Execution] = field(default_factory=list)
 
 
 class BacktestEngine:
@@ -68,11 +77,23 @@ class BacktestEngine:
         self,
         strategy: StrategyDSL,
         initial_capital: float = 100000.0,
-        cost_config: CostModelConfig = CostModelConfig()
+        cost_config: CostModelConfig = CostModelConfig(),
+        slippage_model: Optional[SlippageModel] = None
     ):
         self.strategy = strategy
         self.initial_capital = initial_capital
         self.cost_config = cost_config
+
+        if slippage_model is not None:
+            self.slippage_model = slippage_model
+        elif cost_config.slippage_type == SlippageType.ZERO:
+            self.slippage_model = ZeroSlippage()
+        elif cost_config.slippage_type == SlippageType.PERCENTAGE:
+            self.slippage_model = PercentageSlippage(Decimal(str(cost_config.slippage_value)))
+        else:
+            self.slippage_model = FixedPointsSlippage(Decimal(str(cost_config.slippage_value)))
+
+        self.execution_simulator = ExecutionSimulator(slippage_model=self.slippage_model)
 
     def run(self, df: pd.DataFrame) -> BacktestResult:
         if df.empty or len(df) < 2:
@@ -91,14 +112,17 @@ class BacktestEngine:
         capital = self.initial_capital
         peak_capital = self.initial_capital
         active_position: Optional[TradeRecord] = None
-        pending_order: Optional[Dict[str, Any]] = None  # Signal generated on bar t for execution on bar t+1
+        pending_order: Optional[Order] = None  # Order created on bar t eligible for execution on bar t+1
         trades: List[TradeRecord] = []
+        all_orders: List[Order] = []
+        all_executions: List[Execution] = []
         equity_curve: List[EquityPoint] = []
         trade_counter = 0
 
         # Position sizing parameters
         pos_sizing = self.strategy.position_sizing
         risk = self.strategy.risk
+        lot_size = Decimal(str(getattr(self.strategy.instrument, "lot_size", 1)))
 
         # 3. Bar-by-bar Event Loop (Chronological simulation)
         for i in range(len(df)):
@@ -108,30 +132,35 @@ class BacktestEngine:
             bar_high = float(row["high"])
             bar_low = float(row["low"])
             bar_close = float(row["close"])
+            bar_dict = {"open": bar_open, "high": bar_high, "low": bar_low, "close": bar_close, "timestamp": timestamp_str}
 
-            # A. Process Pending Order generated on previous bar (t-1) -> Fills on current bar t Open
+            # A. Process Eligible Pending Order generated on previous bar (t-1) -> Fills on current bar t Open
             if pending_order is not None and active_position is None:
-                side = pending_order["side"]
-                # Calculate quantity based on position sizing
-                if pos_sizing.type == PositionSizingType.FIXED_QUANTITY:
-                    qty = pos_sizing.value
-                else:
-                    qty = (capital * (pos_sizing.value / 100.0)) / bar_open
-
-                # Apply Indian friction & slippage to entry fill
-                entry_cost = IndianTransactionCostCalculator.calculate_cost("BUY", qty, bar_open, self.cost_config)
-
-                trade_counter += 1
-                active_position = TradeRecord(
-                    trade_id=f"TRD_{trade_counter:04d}",
-                    symbol=self.strategy.instrument.symbol,
-                    side=side,
-                    entry_time=timestamp_str,
-                    entry_price=entry_cost.executed_price_with_slippage,
-                    quantity=qty,
-                    total_costs=entry_cost.total_cost,
-                    entry_indicators=self._get_indicator_snapshot(indicators, i)
+                execution = self.execution_simulator.simulate_execution(
+                    order=pending_order,
+                    bar=bar_dict,
+                    tick_size=Decimal("0.05")
                 )
+
+                if execution is not None:
+                    all_executions.append(execution)
+                    exec_qty = float(execution.quantity)
+                    exec_price = float(execution.execution_price)
+
+                    # Calculate Indian market transaction costs (STT, SEBI, GST, stamp duty)
+                    entry_cost = IndianTransactionCostCalculator.calculate_cost("BUY", exec_qty, exec_price, self.cost_config)
+
+                    trade_counter += 1
+                    active_position = TradeRecord(
+                        trade_id=f"TRD_{trade_counter:04d}",
+                        symbol=self.strategy.instrument.symbol,
+                        side=execution.side,
+                        entry_time=timestamp_str,
+                        entry_price=exec_price,
+                        quantity=exec_qty,
+                        total_costs=entry_cost.total_cost,
+                        entry_indicators=self._get_indicator_snapshot(indicators, i)
+                    )
                 pending_order = None
 
             # B. Check Risk Management / Exits for Active Position during bar t
@@ -202,7 +231,45 @@ class BacktestEngine:
             # C. Evaluate Strategy Entry Rules at bar t close (Zero look-ahead: order fills on bar t+1 Open)
             if active_position is None and pending_order is None:
                 if RuleEvaluator.evaluate_rule_group(self.strategy.entry, df, indicators, i):
-                    pending_order = {"side": "BUY", "generated_bar": i}
+                    # Signal generated at bar t close
+                    signal = Signal(
+                        signal_id=f"SIG_{i:04d}",
+                        timestamp=timestamp_str,
+                        symbol=self.strategy.instrument.symbol,
+                        signal_type=SignalType.BUY,
+                        bar_index=i,
+                        trigger_price=bar_close,
+                        reason="ENTRY_RULE_TRIGGERED",
+                        indicator_snapshot=self._get_indicator_snapshot(indicators, i)
+                    )
+
+                    # Next bar timestamp for order eligibility
+                    next_bar_ts = str(df.iloc[i + 1]["timestamp"]) if (i + 1 < len(df) and "timestamp" in df.columns) else f"bar_{i+1}"
+
+                    # Compute quantity
+                    if pos_sizing.type == PositionSizingType.FIXED_QUANTITY:
+                        raw_qty = Decimal(str(pos_sizing.value))
+                    else:
+                        pct_capital = capital * (pos_sizing.value / 100.0)
+                        raw_qty = Decimal(str(round(pct_capital / bar_close, 4)))
+
+                    # Adjust quantity to lot_size if needed
+                    if lot_size > Decimal("1"):
+                        raw_qty = (raw_qty // lot_size) * lot_size
+                        if raw_qty < lot_size:
+                            raw_qty = lot_size
+
+                    order = OrderFactory.create_order_from_signal(
+                        signal=signal,
+                        strategy_id="STRAT_BACKTEST",
+                        strategy_version_id="VER_1",
+                        quantity=raw_qty,
+                        eligible_at_timestamp=next_bar_ts,
+                        instrument_id=self.strategy.instrument.symbol,
+                        lot_size=lot_size
+                    )
+                    pending_order = order
+                    all_orders.append(order)
 
             # D. Record Mark-to-Market Equity Point
             current_equity = capital
@@ -224,8 +291,15 @@ class BacktestEngine:
                 drawdown_percent=round(drawdown_percent, 2)
             ))
 
+        # Handle edge case: pending order generated on final historical bar has no next bar
+        if pending_order is not None and pending_order.status == OrderStatus.CREATED:
+            self.execution_simulator.simulate_execution(order=pending_order, bar=None)
+
         # 4. Calculate Final Performance Metrics
-        return self._compute_metrics(trades, equity_curve, self.initial_capital, capital)
+        res = self._compute_metrics(trades, equity_curve, self.initial_capital, capital)
+        res.orders = all_orders
+        res.executions = all_executions
+        return res
 
     def _precalculate_indicators(self, df: pd.DataFrame) -> Dict[str, pd.Series]:
         indicators: Dict[str, pd.Series] = {}

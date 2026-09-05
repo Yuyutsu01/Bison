@@ -2,7 +2,7 @@
 SQLAlchemy Relational ORM Models.
 
 Defines persistence schema for Users, Strategies, Strategy Versions, Instruments, Datasets,
-Backtest Runs, and Executed Trades.
+Backtest Runs, Executed Trades, Orders, and Simulated Executions.
 """
 
 import uuid
@@ -108,6 +108,8 @@ class BacktestRunModel(Base):
     user = relationship("UserModel", back_populates="backtests")
     strategy_version = relationship("StrategyVersionModel", back_populates="backtest_runs")
     trades = relationship("TradeModel", back_populates="backtest_run", cascade="all, delete-orphan")
+    orders = relationship("OrderModel", back_populates="backtest_run", cascade="all, delete-orphan")
+    executions = relationship("ExecutionModel", back_populates="backtest_run", cascade="all, delete-orphan")
 
 
 class TradeModel(Base):
@@ -131,3 +133,48 @@ class TradeModel(Base):
     exit_indicators_json = Column(JSON, nullable=True)
 
     backtest_run = relationship("BacktestRunModel", back_populates="trades")
+
+
+class OrderModel(Base):
+    __tablename__ = "orders"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    backtest_run_id = Column(String(36), ForeignKey("backtest_runs.id"), nullable=False)
+    strategy_version_id = Column(String(36), ForeignKey("strategy_versions.id"), nullable=False)
+    signal_id = Column(String(64), nullable=False)
+    instrument_id = Column(String(64), nullable=False)
+    symbol = Column(String(50), nullable=False)
+    side = Column(String(20), nullable=False)
+    order_type = Column(String(20), default="MARKET")
+    quantity = Column(Float, nullable=False)
+    status = Column(String(30), default="CREATED")
+    execution_policy = Column(String(30), default="NEXT_BAR_OPEN")
+    created_at = Column(String(50), nullable=False)
+    eligible_at = Column(String(50), nullable=False)
+    idempotency_key = Column(String(64), nullable=False, index=True)
+    rejection_reason = Column(Text, nullable=True)
+    metadata_json = Column(JSON, nullable=True)
+
+    backtest_run = relationship("BacktestRunModel", back_populates="orders")
+    executions = relationship("ExecutionModel", back_populates="order", cascade="all, delete-orphan")
+
+
+class ExecutionModel(Base):
+    __tablename__ = "executions"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    order_id = Column(String(36), ForeignKey("orders.id"), nullable=False)
+    backtest_run_id = Column(String(36), ForeignKey("backtest_runs.id"), nullable=False)
+    instrument_id = Column(String(64), nullable=False)
+    symbol = Column(String(50), nullable=False)
+    timestamp = Column(String(50), nullable=False)
+    side = Column(String(20), nullable=False)
+    quantity = Column(Float, nullable=False)
+    reference_price = Column(Float, nullable=False)
+    execution_price = Column(Float, nullable=False)
+    slippage = Column(Float, default=0.0)
+    status = Column(String(20), default="SUCCESS")
+    metadata_json = Column(JSON, nullable=True)
+
+    order = relationship("OrderModel", back_populates="executions")
+    backtest_run = relationship("BacktestRunModel", back_populates="executions")

@@ -1,7 +1,8 @@
 """
 Backtesting REST API Routes.
 
-Handles backtest submission, status polling, results retrieval, trade inspection, and CSV export.
+Handles backtest submission, status polling, results retrieval, trade inspection,
+order/execution querying, and CSV export.
 """
 
 import asyncio
@@ -16,7 +17,7 @@ from sqlalchemy import select, desc
 from sqlalchemy.orm import selectinload
 
 from app.db.session import get_db
-from app.db.models import BacktestRunModel, StrategyVersionModel, StrategyModel, TradeModel
+from app.db.models import BacktestRunModel, StrategyVersionModel, StrategyModel, TradeModel, OrderModel, ExecutionModel
 from app.core.security import get_current_user_id
 from app.domains.jobs.worker import execute_backtest_job
 
@@ -61,6 +62,36 @@ class TradeDTO(BaseModel):
     exit_reason: Optional[str] = None
     entry_indicators: Optional[dict] = None
     exit_indicators: Optional[dict] = None
+
+
+class OrderDTO(BaseModel):
+    id: str
+    signal_id: str
+    instrument_id: str
+    symbol: str
+    side: str
+    order_type: str
+    quantity: float
+    status: str
+    execution_policy: str
+    created_at: str
+    eligible_at: str
+    idempotency_key: str
+    rejection_reason: Optional[str] = None
+
+
+class ExecutionDTO(BaseModel):
+    id: str
+    order_id: str
+    instrument_id: str
+    symbol: str
+    timestamp: str
+    side: str
+    quantity: float
+    reference_price: float
+    execution_price: float
+    slippage: float
+    status: str
 
 
 class BacktestDetailDTO(BacktestSummaryDTO):
@@ -202,6 +233,68 @@ async def get_backtest(
         trades=trades_dto,
         created_at=run.created_at.isoformat()
     )
+
+
+@router.get("/{backtest_id}/orders", response_model=List[OrderDTO])
+async def get_backtest_orders(
+    backtest_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(
+        select(OrderModel)
+        .join(BacktestRunModel)
+        .where(OrderModel.backtest_run_id == backtest_id, BacktestRunModel.user_id == user_id)
+    )
+    orders = result.scalars().all()
+    return [
+        OrderDTO(
+            id=o.id,
+            signal_id=o.signal_id,
+            instrument_id=o.instrument_id,
+            symbol=o.symbol,
+            side=o.side,
+            order_type=o.order_type,
+            quantity=o.quantity,
+            status=o.status,
+            execution_policy=o.execution_policy,
+            created_at=o.created_at,
+            eligible_at=o.eligible_at,
+            idempotency_key=o.idempotency_key,
+            rejection_reason=o.rejection_reason
+        )
+        for o in orders
+    ]
+
+
+@router.get("/{backtest_id}/executions", response_model=List[ExecutionDTO])
+async def get_backtest_executions(
+    backtest_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(
+        select(ExecutionModel)
+        .join(BacktestRunModel)
+        .where(ExecutionModel.backtest_run_id == backtest_id, BacktestRunModel.user_id == user_id)
+    )
+    executions = result.scalars().all()
+    return [
+        ExecutionDTO(
+            id=e.id,
+            order_id=e.order_id,
+            instrument_id=e.instrument_id,
+            symbol=e.symbol,
+            timestamp=e.timestamp,
+            side=e.side,
+            quantity=e.quantity,
+            reference_price=e.reference_price,
+            execution_price=e.execution_price,
+            slippage=e.slippage,
+            status=e.status
+        )
+        for e in executions
+    ]
 
 
 @router.get("/{backtest_id}/export/csv")
