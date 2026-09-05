@@ -2,14 +2,36 @@
 
 ## Core Execution Semantics & Zero Look-Ahead Bias
 
-The backtesting engine is designed as an event-driven chronological simulator.
+The backtesting engine is designed as a deterministic event-driven chronological simulator.
 
-### Timeline Mechanics
-1. **Bar $t$ Close**: At bar $t$, indicators are calculated using price data up to bar $t$ close (`Open_t`, `High_t`, `Low_t`, `Close_t`, `Volume_t`).
-2. **Strategy Evaluation**: Entry and exit rules are evaluated against bar $t$ indicator values.
-3. **Signal Generation**: If rules pass, a `Signal` is emitted with signal time $t$.
-4. **Order Generation**: The `Signal` is converted into an `Order` (BUY/SELL) with order time $t$.
-5. **Execution ($t+1$ Open)**: The order is simulated for fill strictly on bar $t+1$'s `Open_{t+1}` price (plus slippage & transaction costs).
+```text
+Bar t Close
+    ↓
+Indicator Calculation
+    ↓
+Strategy Rule Evaluation
+    ↓
+Signal Generation
+    ↓
+Order Factory Creation (Eligible at Bar t+1)
+    ↓
+Bar t+1 Open Arrival
+    ↓
+Execution Simulator (Fills at Bar t+1 Open + Slippage + Tick Normalization)
+    ↓
+Indian Friction & Cost Accounting
+```
+
+### Bar Event Sequence
+
+For each bar $t$ in chronological order:
+1. **Process Eligible Pending Orders**: Any pending order generated on bar $t-1$ evaluates against bar $t$ `Open` via `ExecutionSimulator`.
+2. **Evaluate Active Position Exits**: Check Stop-Loss, Target, Max Holding Bars, Strategy Exit Rules, or End-of-Day exit triggers.
+3. **Evaluate Strategy Entry Rules**: Evaluate rules strictly using price & indicator data available up to bar $t$ `Close`.
+4. **Generate Signal & Create Order**: Convert triggered signal into a validated `Order` via `OrderFactory` marked eligible for bar $t+1$.
+5. **Mark-to-Market Equity Point**: Record current equity, cash, and drawdown metrics.
+
+---
 
 ### Indian Cost Model Accounting
 For each executed trade, transaction friction is calculated:
@@ -19,4 +41,4 @@ For each executed trade, transaction friction is calculated:
 - **GST**: 18% on (Brokerage + Exchange Charges).
 - **SEBI Charges**: ₹10 per crore (0.0001%).
 - **Stamp Duty**: 0.003% on buy side.
-- **Slippage**: Fixed basis-points or fixed rupee offset.
+- **Slippage**: `ZeroSlippage`, `FixedPointsSlippage`, or `PercentageSlippage`.

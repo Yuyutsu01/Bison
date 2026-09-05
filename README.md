@@ -5,29 +5,19 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Next.js 14](https://img.shields.io/badge/Next.js-14-black)](https://nextjs.org/)
 
-**Bison** is a production-grade algorithmic trading platform built specifically for Indian market traders (NIFTY, BANKNIFTY, and NSE/BSE Equities). It provides an extensible, event-driven, zero look-ahead bias backtesting engine paired with a modern visual rule builder and quantitative analytics dashboard.
+**Bison** is a production-grade algorithmic trading platform built specifically for Indian market traders (NIFTY, BANKNIFTY, and NSE/BSE Equities). It provides an extensible, event-driven, zero look-ahead bias backtesting engine paired with a modern visual rule builder, order & execution simulator, and quantitative analytics dashboard.
 
 ---
 
-## 🌟 Key Features
+## 🌟 Key Features & Iterations Completed
 
-### Implemented (Iteration 1 Scope)
-1. **Visual Rule-Based Strategy Builder**: Interactive canvas (Next.js 14 + React Flow) for constructing entry, exit, indicator, and risk management rules without code.
-2. **Strict Zero Look-Ahead Bias Engine**: Bar $t$ signals execute strictly on bar $t+1$'s Open price, eliminating future data leakage.
-3. **Indian Market Microstructure Costs**: Accurate cost modeling for Indian markets including Brokerage, STT, Exchange fees, SEBI charges, GST (18%), Stamp Duty, and Slippage.
-4. **Formal Strategy DSL**: Typed, versioned, and validated JSON strategy definition schema.
-5. **Asynchronous Backtest Queue**: Backtests execute via background job workers with live progress updates.
-6. **Quantitative Analytics Dashboard**: Financial performance cards (Sharpe, CAGR, Max Drawdown, Win Rate, Profit Factor), interactive Recharts equity curve, drawdown chart, and candlestick chart with trade execution markers.
-7. **Trade Inspector**: Deep-dive into individual executed trades to understand entry/exit signals, indicator states, holding duration, and cost breakdowns.
-8. **Strategy Versioning & Comparison**: Immutable strategy versioning with side-by-side performance comparison.
-9. **Export Engine**: Export full backtest metrics, trade logs, and strategy definitions in CSV/JSON formats.
-
-### Planned (Future Iterations)
-- **Iteration 2**: Paper Trading & Broker Integration (Zerodha, Angel One, Dhan).
-- **Iteration 3**: Advanced Options Trading & Multi-Leg Option Strategies.
-- **Iteration 4**: Live Order Execution & Real-Time Risk Engine.
-- **Iteration 5**: Advanced Portfolio Management & Multi-Asset Optimization.
-- **Iteration 6**: Machine Learning / Reinforcement Learning Strategy Plugins.
+### Implemented Iterations (0 through 5)
+1. **Iteration 0 (Foundation)**: Monorepo infrastructure, Next.js frontend, FastAPI backend, PostgreSQL, Redis, worker infrastructure, Docker Compose, CI pipeline.
+2. **Iteration 1 (Instruments & Market Data)**: Instrument model, NSE instruments, NIFTY/BANKNIFTY fixtures, CSV ingestion, data validation, missing candle detection, OHLCV normalization.
+3. **Iteration 2 (Strategy DSL)**: Formal JSON strategy specification schema, entry/exit condition tree, Pydantic validation models.
+4. **Iteration 3 (Indicator Engine)**: SMA, EMA, RSI, MACD, Bollinger Bands, ATR calculations with warm-up protection and numerical tests.
+5. **Iteration 4 (Signal Engine)**: Deterministic signal generation (`BUY`, `SELL`, `EXIT`), logical condition tree evaluation (`AND`, `OR`, `NOT`), and crossover detection.
+6. **Iteration 5 (Order & Execution Simulator)**: Strongly typed Order domain, state machine lifecycle (`CREATED` -> `PENDING` -> `FILLED`), `NEXT_BAR_OPEN` execution policy, slippage models (`Zero`, `FixedPoints`, `Percentage`), tick size normalization, idempotency protection, and REST API endpoints.
 
 ---
 
@@ -39,9 +29,11 @@ graph TD
     API -->|Auth & CRUD| DB[(PostgreSQL Database)]
     API -->|Enqueue Jobs| Queue[Redis Queue]
     Worker[Async Worker] -->|Fetch Jobs| Queue
-    Worker -->|Run Simulation| Engine[Pure Backtesting Engine]
-    Engine -->|Fetch Market Data| Data[Data Domain / OHLCV]
-    Worker -->|Persist Results| DB
+    Worker -->|Run Engine| Engine[Pure Backtesting Engine]
+    Engine -->|Signals| Signals[Signal Engine]
+    Signals -->|Orders| Factory[Order Factory]
+    Factory -->|Executes| ExecSim[Execution Simulator]
+    ExecSim -->|Persist Results| DB
     API -->|Poll Status / Results| Client
 ```
 
@@ -74,14 +66,8 @@ Access services:
 
 ## 💻 Local Development Commands
 
-Using `make`:
-
 ```bash
-make setup    # Install backend and frontend dependencies
-make dev      # Run local dev servers (API + Web)
-make test     # Run all unit and integration tests
-make lint     # Run code formatters and linters
-make format   # Automatically format codebase
+pytest apps/api/tests     # Run backend pytest suite (31 tests)
 ```
 
 ---
@@ -93,11 +79,10 @@ Bison/
 ├── apps/
 │   ├── api/            # FastAPI Python backend & backtesting engine
 │   └── web/            # Next.js 14 TypeScript web frontend
-├── docs/               # System architecture & decision records
+├── docs/               # System architecture, iterations & decision records
 ├── data/               # Deterministic test fixtures & sample market data
 ├── infra/              # Dockerfiles & container configurations
 ├── docker-compose.yml
-├── Makefile
 └── README.md
 ```
 
