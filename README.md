@@ -9,7 +9,7 @@
 
 ---
 
-## 🌟 Key Features & Iterations Completed
+##  Key Features & Iterations Completed
 
 ### Implemented Iterations (0 through 5)
 1. **Iteration 0 (Foundation)**: Monorepo infrastructure, Next.js frontend, FastAPI backend, PostgreSQL, Redis, worker infrastructure, Docker Compose, CI pipeline.
@@ -21,7 +21,7 @@
 
 ---
 
-## 🏛️ System Architecture
+##  System Architecture
 
 ```mermaid
 graph TD
@@ -39,7 +39,7 @@ graph TD
 
 ---
 
-## 🚀 Quick Start (Local Setup)
+## Quick Start (Local Setup)
 
 ### Prerequisites
 - Docker & Docker Compose
@@ -64,7 +64,7 @@ Access services:
 
 ---
 
-## 💻 Local Development Commands
+## Local Development Commands
 
 ```bash
 pytest apps/api/tests     # Run backend pytest suite (31 tests)
@@ -72,7 +72,7 @@ pytest apps/api/tests     # Run backend pytest suite (31 tests)
 
 ---
 
-## 📁 Repository Structure
+## Repository Structure
 
 ```text
 Bison/
@@ -88,6 +88,6 @@ Bison/
 
 ---
 
-## ⚠️ Disclaimer
+## Disclaimer
 
 This platform is intended exclusively for educational, research, and backtesting purposes. Historical performance does not guarantee future results. Algorithmic trading involves substantial risk of loss. Always perform thorough risk management before deploying real capital.
