@@ -5,23 +5,24 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Next.js 14](https://img.shields.io/badge/Next.js-14-black)](https://nextjs.org/)
 
-**Bison** is a production-grade algorithmic trading platform built specifically for Indian market traders (NIFTY, BANKNIFTY, and NSE/BSE Equities). It provides an extensible, event-driven, zero look-ahead bias backtesting engine paired with a modern visual rule builder, order & execution simulator, and quantitative analytics dashboard.
+**Bison** is a production-grade algorithmic trading platform built specifically for Indian market traders (NIFTY, BANKNIFTY, and NSE/BSE Equities). It provides an extensible, event-driven, zero look-ahead bias backtesting engine paired with a modern visual rule builder, order & execution simulator, portfolio accounting engine, risk management controls, and quantitative analytics dashboard.
 
 ---
 
-##  Key Features & Iterations Completed
+## 🌟 Key Features & Iterations Completed
 
-### Implemented Iterations (0 through 5)
+### Implemented Iterations (0 through 6)
 1. **Iteration 0 (Foundation)**: Monorepo infrastructure, Next.js frontend, FastAPI backend, PostgreSQL, Redis, worker infrastructure, Docker Compose, CI pipeline.
 2. **Iteration 1 (Instruments & Market Data)**: Instrument model, NSE instruments, NIFTY/BANKNIFTY fixtures, CSV ingestion, data validation, missing candle detection, OHLCV normalization.
 3. **Iteration 2 (Strategy DSL)**: Formal JSON strategy specification schema, entry/exit condition tree, Pydantic validation models.
 4. **Iteration 3 (Indicator Engine)**: SMA, EMA, RSI, MACD, Bollinger Bands, ATR calculations with warm-up protection and numerical tests.
 5. **Iteration 4 (Signal Engine)**: Deterministic signal generation (`BUY`, `SELL`, `EXIT`), logical condition tree evaluation (`AND`, `OR`, `NOT`), and crossover detection.
 6. **Iteration 5 (Order & Execution Simulator)**: Strongly typed Order domain, state machine lifecycle (`CREATED` -> `PENDING` -> `FILLED`), `NEXT_BAR_OPEN` execution policy, slippage models (`Zero`, `FixedPoints`, `Percentage`), tick size normalization, idempotency protection, and REST API endpoints.
+7. **Iteration 6 (Portfolio & Risk Engine)**: Execution-driven portfolio state machine, weighted average entry price accounting, realized/unrealized P&L tracking, position sizing engine (`FixedQuantity`, `FixedCapital`, `PercentCapital`), risk controls (`StopLoss`, `Target`, `TrailingStop`, `MaxHoldingBars`, `EODExit`, `MaxPositions`), intrabar conflict policy, gap execution rules, ORM persistence, and REST endpoints.
 
 ---
 
-##  System Architecture
+## 🏛️ System Architecture
 
 ```mermaid
 graph TD
@@ -33,13 +34,16 @@ graph TD
     Engine -->|Signals| Signals[Signal Engine]
     Signals -->|Orders| Factory[Order Factory]
     Factory -->|Executes| ExecSim[Execution Simulator]
-    ExecSim -->|Persist Results| DB
+    ExecSim -->|Fills| Portfolio[Portfolio Service]
+    Portfolio -->|Revalues| Risk[Risk Engine]
+    Risk -->|Exit Orders| Factory
+    Portfolio -->|Persist State| DB
     API -->|Poll Status / Results| Client
 ```
 
 ---
 
-## Quick Start (Local Setup)
+## 🚀 Quick Start (Local Setup)
 
 ### Prerequisites
 - Docker & Docker Compose
@@ -64,15 +68,15 @@ Access services:
 
 ---
 
-## Local Development Commands
+## 💻 Local Development Commands
 
 ```bash
-pytest apps/api/tests     # Run backend pytest suite (31 tests)
+pytest apps/api/tests     # Run backend pytest suite (45 tests)
 ```
 
 ---
 
-## Repository Structure
+## 📁 Repository Structure
 
 ```text
 Bison/
@@ -88,6 +92,6 @@ Bison/
 
 ---
 
-## Disclaimer
+## ⚠️ Disclaimer
 
 This platform is intended exclusively for educational, research, and backtesting purposes. Historical performance does not guarantee future results. Algorithmic trading involves substantial risk of loss. Always perform thorough risk management before deploying real capital.
