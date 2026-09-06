@@ -2,7 +2,8 @@
 SQLAlchemy Relational ORM Models.
 
 Defines persistence schema for Users, Strategies, Strategy Versions, Instruments, Datasets,
-Backtest Runs, Executed Trades, Orders, and Simulated Executions.
+Backtest Runs, Executed Trades, Orders, Simulated Executions, Portfolios, Positions,
+Portfolio Snapshots, and Risk Events.
 """
 
 import uuid
@@ -110,6 +111,9 @@ class BacktestRunModel(Base):
     trades = relationship("TradeModel", back_populates="backtest_run", cascade="all, delete-orphan")
     orders = relationship("OrderModel", back_populates="backtest_run", cascade="all, delete-orphan")
     executions = relationship("ExecutionModel", back_populates="backtest_run", cascade="all, delete-orphan")
+    portfolio = relationship("PortfolioModel", back_populates="backtest_run", uselist=False, cascade="all, delete-orphan")
+    snapshots = relationship("PortfolioSnapshotModel", back_populates="backtest_run", cascade="all, delete-orphan")
+    risk_events = relationship("RiskEventModel", back_populates="backtest_run", cascade="all, delete-orphan")
 
 
 class TradeModel(Base):
@@ -178,3 +182,77 @@ class ExecutionModel(Base):
 
     order = relationship("OrderModel", back_populates="executions")
     backtest_run = relationship("BacktestRunModel", back_populates="executions")
+
+
+class PortfolioModel(Base):
+    __tablename__ = "portfolios"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    backtest_run_id = Column(String(36), ForeignKey("backtest_runs.id"), nullable=False, unique=True)
+    initial_capital = Column(Float, nullable=False)
+    cash = Column(Float, nullable=False)
+    equity = Column(Float, nullable=False)
+    realized_pnl = Column(Float, default=0.0)
+    unrealized_pnl = Column(Float, default=0.0)
+    total_pnl = Column(Float, default=0.0)
+    gross_exposure = Column(Float, default=0.0)
+    net_exposure = Column(Float, default=0.0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    backtest_run = relationship("BacktestRunModel", back_populates="portfolio")
+    positions = relationship("PositionModel", back_populates="portfolio", cascade="all, delete-orphan")
+
+
+class PositionModel(Base):
+    __tablename__ = "positions"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    portfolio_id = Column(String(36), ForeignKey("portfolios.id"), nullable=False)
+    instrument_id = Column(String(64), nullable=False)
+    symbol = Column(String(50), nullable=False)
+    side = Column(String(20), nullable=False)
+    quantity = Column(Float, nullable=False)
+    average_entry_price = Column(Float, nullable=False)
+    current_price = Column(Float, nullable=False)
+    realized_pnl = Column(Float, default=0.0)
+    unrealized_pnl = Column(Float, default=0.0)
+    status = Column(String(20), default="OPEN")
+    opened_at = Column(String(50), nullable=False)
+    last_updated_at = Column(String(50), nullable=False)
+    holding_bars = Column(Integer, default=0)
+
+    portfolio = relationship("PortfolioModel", back_populates="positions")
+
+
+class PortfolioSnapshotModel(Base):
+    __tablename__ = "portfolio_snapshots"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    backtest_run_id = Column(String(36), ForeignKey("backtest_runs.id"), nullable=False)
+    timestamp = Column(String(50), nullable=False)
+    cash = Column(Float, nullable=False)
+    equity = Column(Float, nullable=False)
+    gross_exposure = Column(Float, default=0.0)
+    net_exposure = Column(Float, default=0.0)
+    realized_pnl = Column(Float, default=0.0)
+    unrealized_pnl = Column(Float, default=0.0)
+    total_pnl = Column(Float, default=0.0)
+    open_position_count = Column(Integer, default=0)
+
+    backtest_run = relationship("BacktestRunModel", back_populates="snapshots")
+
+
+class RiskEventModel(Base):
+    __tablename__ = "risk_events"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    backtest_run_id = Column(String(36), ForeignKey("backtest_runs.id"), nullable=False)
+    position_id = Column(String(36), nullable=True)
+    symbol = Column(String(50), nullable=False)
+    event_type = Column(String(50), nullable=False)
+    timestamp = Column(String(50), nullable=False)
+    trigger_price = Column(Float, nullable=False)
+    reason = Column(Text, nullable=False)
+    metadata_json = Column(JSON, nullable=True)
+
+    backtest_run = relationship("BacktestRunModel", back_populates="risk_events")

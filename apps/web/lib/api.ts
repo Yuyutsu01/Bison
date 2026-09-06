@@ -84,6 +84,43 @@ export interface TradeDTO {
   exit_indicators?: Record<string, number>;
 }
 
+export interface PortfolioDTO {
+  id: string;
+  initial_capital: number;
+  cash: number;
+  equity: number;
+  realized_pnl: number;
+  unrealized_pnl: number;
+  total_pnl: number;
+  gross_exposure: number;
+  net_exposure: number;
+}
+
+export interface PositionDTO {
+  id: string;
+  symbol: string;
+  side: string;
+  quantity: number;
+  average_entry_price: number;
+  current_price: number;
+  realized_pnl: number;
+  unrealized_pnl: number;
+  status: string;
+  opened_at: string;
+  last_updated_at: string;
+  holding_bars: number;
+}
+
+export interface RiskEventDTO {
+  id: string;
+  position_id?: string;
+  symbol: string;
+  event_type: string;
+  timestamp: string;
+  trigger_price: number;
+  reason: string;
+}
+
 export interface EquityPointDTO {
   timestamp: string;
   equity: number;
@@ -108,5 +145,8 @@ export interface BacktestDetailDTO {
   max_drawdown_percent?: number;
   equity_curve?: EquityPointDTO[];
   trades: TradeDTO[];
+  portfolio?: PortfolioDTO;
+  positions?: PositionDTO[];
+  risk_events?: RiskEventDTO[];
   created_at: string;
 }

@@ -2,7 +2,7 @@
 Backtesting REST API Routes.
 
 Handles backtest submission, status polling, results retrieval, trade inspection,
-order/execution querying, and CSV export.
+order/execution querying, portfolio state inspection, risk events, and CSV export.
 """
 
 import asyncio
@@ -17,7 +17,11 @@ from sqlalchemy import select, desc
 from sqlalchemy.orm import selectinload
 
 from app.db.session import get_db
-from app.db.models import BacktestRunModel, StrategyVersionModel, StrategyModel, TradeModel, OrderModel, ExecutionModel
+from app.db.models import (
+    BacktestRunModel, StrategyVersionModel, StrategyModel, TradeModel,
+    OrderModel, ExecutionModel, PortfolioModel, PositionModel,
+    PortfolioSnapshotModel, RiskEventModel
+)
 from app.core.security import get_current_user_id
 from app.domains.jobs.worker import execute_backtest_job
 
@@ -94,9 +98,47 @@ class ExecutionDTO(BaseModel):
     status: str
 
 
+class PortfolioDTO(BaseModel):
+    id: str
+    initial_capital: float
+    cash: float
+    equity: float
+    realized_pnl: float
+    unrealized_pnl: float
+    total_pnl: float
+    gross_exposure: float
+    net_exposure: float
+
+
+class PositionDTO(BaseModel):
+    id: str
+    symbol: str
+    side: str
+    quantity: float
+    average_entry_price: float
+    current_price: float
+    realized_pnl: float
+    unrealized_pnl: float
+    status: str
+    opened_at: str
+    last_updated_at: str
+    holding_bars: int
+
+
+class RiskEventDTO(BaseModel):
+    id: str
+    position_id: Optional[str] = None
+    symbol: str
+    event_type: str
+    timestamp: str
+    trigger_price: float
+    reason: str
+
+
 class BacktestDetailDTO(BacktestSummaryDTO):
     equity_curve: Optional[list] = None
     trades: List[TradeDTO] = []
+    portfolio: Optional[PortfolioDTO] = None
 
 
 @router.post("", response_model=BacktestSummaryDTO, status_code=status.HTTP_202_ACCEPTED)
@@ -187,7 +229,8 @@ async def get_backtest(
         select(BacktestRunModel)
         .options(
             selectinload(BacktestRunModel.strategy_version).selectinload(StrategyVersionModel.strategy),
-            selectinload(BacktestRunModel.trades)
+            selectinload(BacktestRunModel.trades),
+            selectinload(BacktestRunModel.portfolio)
         )
         .where(BacktestRunModel.id == backtest_id, BacktestRunModel.user_id == user_id)
     )
@@ -216,6 +259,20 @@ async def get_backtest(
         for t in run.trades
     ]
 
+    portfolio_dto = None
+    if run.portfolio:
+        portfolio_dto = PortfolioDTO(
+            id=run.portfolio.id,
+            initial_capital=run.portfolio.initial_capital,
+            cash=run.portfolio.cash,
+            equity=run.portfolio.equity,
+            realized_pnl=run.portfolio.realized_pnl,
+            unrealized_pnl=run.portfolio.unrealized_pnl,
+            total_pnl=run.portfolio.total_pnl,
+            gross_exposure=run.portfolio.gross_exposure,
+            net_exposure=run.portfolio.net_exposure
+        )
+
     return BacktestDetailDTO(
         id=run.id,
         strategy_id=run.strategy_version.strategy.id if run.strategy_version else "",
@@ -231,6 +288,7 @@ async def get_backtest(
         max_drawdown_percent=run.max_drawdown_percent,
         equity_curve=run.equity_curve_json,
         trades=trades_dto,
+        portfolio=portfolio_dto,
         created_at=run.created_at.isoformat()
     )
 
@@ -294,6 +352,91 @@ async def get_backtest_executions(
             status=e.status
         )
         for e in executions
+    ]
+
+
+@router.get("/{backtest_id}/portfolio", response_model=Optional[PortfolioDTO])
+async def get_backtest_portfolio(
+    backtest_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(
+        select(PortfolioModel)
+        .join(BacktestRunModel)
+        .where(PortfolioModel.backtest_run_id == backtest_id, BacktestRunModel.user_id == user_id)
+    )
+    port = result.scalars().first()
+    if not port:
+        return None
+    return PortfolioDTO(
+        id=port.id,
+        initial_capital=port.initial_capital,
+        cash=port.cash,
+        equity=port.equity,
+        realized_pnl=port.realized_pnl,
+        unrealized_pnl=port.unrealized_pnl,
+        total_pnl=port.total_pnl,
+        gross_exposure=port.gross_exposure,
+        net_exposure=port.net_exposure
+    )
+
+
+@router.get("/{backtest_id}/positions", response_model=List[PositionDTO])
+async def get_backtest_positions(
+    backtest_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(
+        select(PositionModel)
+        .join(PortfolioModel)
+        .join(BacktestRunModel)
+        .where(PositionModel.portfolio_id == PortfolioModel.id, PortfolioModel.backtest_run_id == backtest_id, BacktestRunModel.user_id == user_id)
+    )
+    positions = result.scalars().all()
+    return [
+        PositionDTO(
+            id=p.id,
+            symbol=p.symbol,
+            side=p.side,
+            quantity=p.quantity,
+            average_entry_price=p.average_entry_price,
+            current_price=p.current_price,
+            realized_pnl=p.realized_pnl,
+            unrealized_pnl=p.unrealized_pnl,
+            status=p.status,
+            opened_at=p.opened_at,
+            last_updated_at=p.last_updated_at,
+            holding_bars=p.holding_bars
+        )
+        for p in positions
+    ]
+
+
+@router.get("/{backtest_id}/risk-events", response_model=List[RiskEventDTO])
+async def get_backtest_risk_events(
+    backtest_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(
+        select(RiskEventModel)
+        .join(BacktestRunModel)
+        .where(RiskEventModel.backtest_run_id == backtest_id, BacktestRunModel.user_id == user_id)
+    )
+    events = result.scalars().all()
+    return [
+        RiskEventDTO(
+            id=ev.id,
+            position_id=ev.position_id,
+            symbol=ev.symbol,
+            event_type=ev.event_type,
+            timestamp=ev.timestamp,
+            trigger_price=ev.trigger_price,
+            reason=ev.reason
+        )
+        for ev in events
     ]
 
 

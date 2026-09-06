@@ -3,9 +3,10 @@ Deterministic Event-Driven Backtesting Simulator Engine.
 
 Executes rule-based quantitative trading strategies on historical OHLCV data.
 Enforces zero look-ahead bias (orders generated on bar t execute strictly on bar t+1 Open).
-Integrates Order Domain Factory, Execution Simulator, and Indian market transaction costs.
+Integrates Order Domain, Execution Simulator, Portfolio Engine, and Risk Engine.
 """
 
+import uuid
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
 from decimal import Decimal
@@ -15,13 +16,21 @@ import numpy as np
 from app.domains.strategies.schemas import StrategyDSL, PositionSizingType
 from app.domains.indicators.calculator import IndicatorEngine
 from app.domains.signals.models import Signal, SignalType
-from app.domains.orders.models import Order, OrderStatus
+from app.domains.orders.models import Order, OrderStatus, OrderType
 from app.domains.orders.factory import OrderFactory
 from app.domains.execution.models import Execution
 from app.domains.execution.simulator import ExecutionSimulator
 from app.domains.execution.slippage import SlippageModel, FixedPointsSlippage, PercentageSlippage, ZeroSlippage
 from app.domains.backtesting.costs import IndianTransactionCostCalculator, CostModelConfig, SlippageType
 from app.domains.backtesting.evaluator import RuleEvaluator
+
+from app.domains.portfolio.models import (
+    Portfolio, Position, PositionSide, PositionStatus, PortfolioSnapshot
+)
+from app.domains.portfolio.service import PortfolioService
+from app.domains.portfolio.sizing import PositionSizingEngine
+from app.domains.risk.models import RiskEvent, RiskEventType
+from app.domains.risk.engine import RiskEngine
 
 
 @dataclass
@@ -68,21 +77,27 @@ class BacktestResult:
     sharpe_ratio: float
     orders: List[Order] = field(default_factory=list)
     executions: List[Execution] = field(default_factory=list)
+    portfolio: Optional[Portfolio] = None
+    snapshots: List[PortfolioSnapshot] = field(default_factory=list)
+    risk_events: List[RiskEvent] = field(default_factory=list)
+    positions: List[Position] = field(default_factory=list)
 
 
 class BacktestEngine:
-    """Core event-driven simulation engine for quantitative backtests."""
+    """Core event-driven simulation engine integrating Portfolio & Risk Engine."""
 
     def __init__(
         self,
         strategy: StrategyDSL,
         initial_capital: float = 100000.0,
         cost_config: CostModelConfig = CostModelConfig(),
-        slippage_model: Optional[SlippageModel] = None
+        slippage_model: Optional[SlippageModel] = None,
+        max_simultaneous_positions: Optional[int] = None
     ):
         self.strategy = strategy
         self.initial_capital = initial_capital
         self.cost_config = cost_config
+        self.max_simultaneous_positions = max_simultaneous_positions
 
         if slippage_model is not None:
             self.slippage_model = slippage_model
@@ -100,31 +115,44 @@ class BacktestEngine:
             raise ValueError("Input DataFrame is too short for backtesting.")
 
         df = df.copy()
-        # Clean column names
         df.columns = [c.lower() for c in df.columns]
         if "timestamp" not in df.columns and "date" in df.columns:
             df["timestamp"] = df["date"]
 
-        # 1. Pre-calculate all required indicators
+        # 1. Pre-calculate indicators
         indicators = self._precalculate_indicators(df)
 
-        # 2. Simulation state variables
+        # 2. Initialize Portfolio Domain & Service
+        initial_cap_dec = Decimal(str(self.initial_capital))
+        portfolio = Portfolio(
+            id=f"PORT_{uuid.uuid4().hex[:12]}",
+            backtest_run_id="BACKTEST_RUN",
+            initial_capital=initial_cap_dec,
+            cash=initial_cap_dec,
+            equity=initial_cap_dec
+        )
+        portfolio_service = PortfolioService(portfolio)
+
+        # State tracking variables
         capital = self.initial_capital
         peak_capital = self.initial_capital
-        active_position: Optional[TradeRecord] = None
-        pending_order: Optional[Order] = None  # Order created on bar t eligible for execution on bar t+1
+        active_trade: Optional[TradeRecord] = None
+        pending_order: Optional[Order] = None
+
         trades: List[TradeRecord] = []
         all_orders: List[Order] = []
         all_executions: List[Execution] = []
+        all_snapshots: List[PortfolioSnapshot] = []
+        all_risk_events: List[RiskEvent] = []
         equity_curve: List[EquityPoint] = []
         trade_counter = 0
 
-        # Position sizing parameters
         pos_sizing = self.strategy.position_sizing
         risk = self.strategy.risk
+        symbol = self.strategy.instrument.symbol
         lot_size = Decimal(str(getattr(self.strategy.instrument, "lot_size", 1)))
 
-        # 3. Bar-by-bar Event Loop (Chronological simulation)
+        # 3. Bar-by-Bar Chronological Event Loop
         for i in range(len(df)):
             row = df.iloc[i]
             timestamp_str = str(row.get("timestamp", f"bar_{i}"))
@@ -132,10 +160,18 @@ class BacktestEngine:
             bar_high = float(row["high"])
             bar_low = float(row["low"])
             bar_close = float(row["close"])
-            bar_dict = {"open": bar_open, "high": bar_high, "low": bar_low, "close": bar_close, "timestamp": timestamp_str}
+            bar_dict = {
+                "open": bar_open,
+                "high": bar_high,
+                "low": bar_low,
+                "close": bar_close,
+                "symbol": symbol,
+                "timestamp": timestamp_str
+            }
+            is_final_bar = (i == len(df) - 1)
 
-            # A. Process Eligible Pending Order generated on previous bar (t-1) -> Fills on current bar t Open
-            if pending_order is not None and active_position is None:
+            # A. Process Pending Order (generated on previous bar t-1) -> Fills on bar t Open
+            if pending_order is not None:
                 execution = self.execution_simulator.simulate_execution(
                     order=pending_order,
                     bar=bar_dict,
@@ -147,136 +183,142 @@ class BacktestEngine:
                     exec_qty = float(execution.quantity)
                     exec_price = float(execution.execution_price)
 
-                    # Calculate Indian market transaction costs (STT, SEBI, GST, stamp duty)
-                    entry_cost = IndianTransactionCostCalculator.calculate_cost("BUY", exec_qty, exec_price, self.cost_config)
+                    # Source of Truth: Apply Execution to Portfolio
+                    portfolio_service.apply_execution(execution)
 
-                    trade_counter += 1
-                    active_position = TradeRecord(
-                        trade_id=f"TRD_{trade_counter:04d}",
-                        symbol=self.strategy.instrument.symbol,
-                        side=execution.side,
-                        entry_time=timestamp_str,
-                        entry_price=exec_price,
-                        quantity=exec_qty,
-                        total_costs=entry_cost.total_cost,
-                        entry_indicators=self._get_indicator_snapshot(indicators, i)
-                    )
+                    if execution.side in ("BUY", "LONG_ENTRY"):
+                        entry_cost = IndianTransactionCostCalculator.calculate_cost("BUY", exec_qty, exec_price, self.cost_config)
+                        trade_counter += 1
+                        active_trade = TradeRecord(
+                            trade_id=f"TRD_{trade_counter:04d}",
+                            symbol=symbol,
+                            side=execution.side,
+                            entry_time=timestamp_str,
+                            entry_price=exec_price,
+                            quantity=exec_qty,
+                            total_costs=entry_cost.total_cost,
+                            entry_indicators=self._get_indicator_snapshot(indicators, i)
+                        )
+                    elif execution.side in ("SELL", "LONG_EXIT") and active_trade is not None:
+                        exit_cost = IndianTransactionCostCalculator.calculate_cost("SELL", exec_qty, exec_price, self.cost_config)
+                        active_trade.exit_time = timestamp_str
+                        active_trade.exit_price = exec_price
+                        active_trade.exit_reason = pending_order.metadata.get("signal_reason", "EXIT_ORDER")
+                        active_trade.total_costs += exit_cost.total_cost
+                        active_trade.exit_indicators = self._get_indicator_snapshot(indicators, i)
+
+                        gross_pnl = (active_trade.exit_price - active_trade.entry_price) * active_trade.quantity
+                        net_pnl = gross_pnl - active_trade.total_costs
+                        active_trade.gross_pnl = round(gross_pnl, 2)
+                        active_trade.net_pnl = round(net_pnl, 2)
+
+                        trades.append(active_trade)
+                        active_trade = None
+
                 pending_order = None
 
-            # B. Check Risk Management / Exits for Active Position during bar t
-            if active_position is not None:
-                active_position.holding_bars += 1
-                exit_triggered = False
-                exit_price = bar_close
-                exit_reason = None
+            # B. Mark-to-Market Portfolio Revaluation
+            snapshot = portfolio_service.mark_to_market(bar_dict, timestamp_str)
+            all_snapshots.append(snapshot)
+            capital = float(portfolio.cash)
+            current_equity = float(portfolio.equity)
 
-                # 1. Stop-loss check
-                if risk.stop_loss_percent is not None:
-                    sl_price = active_position.entry_price * (1.0 - (risk.stop_loss_percent / 100.0))
-                    if bar_low <= sl_price:
-                        exit_triggered = True
-                        exit_price = sl_price
-                        exit_reason = "STOP_LOSS"
+            # C. Evaluate Risk Engine on Open Positions during bar t
+            open_pos = portfolio.positions.get(symbol)
+            if open_pos is not None and open_pos.status == PositionStatus.OPEN and pending_order is None:
+                risk_event = RiskEngine.evaluate_position_risk(
+                    portfolio=portfolio,
+                    position=open_pos,
+                    bar=bar_dict,
+                    risk_config=risk,
+                    is_final_bar=is_final_bar
+                )
 
-                # 2. Target check
-                if not exit_triggered and risk.target_percent is not None:
-                    target_price = active_position.entry_price * (1.0 + (risk.target_percent / 100.0))
-                    if bar_high >= target_price:
-                        exit_triggered = True
-                        exit_price = target_price
-                        exit_reason = "TARGET"
+                if risk_event is not None:
+                    all_risk_events.append(risk_event)
 
-                # 3. Max holding period check
-                if not exit_triggered and risk.max_holding_bars is not None:
-                    if active_position.holding_bars >= risk.max_holding_bars:
-                        exit_triggered = True
-                        exit_price = bar_close
-                        exit_reason = "MAX_HOLDING_EXCEEDED"
-
-                # 4. Strategy Exit Conditions check
-                if not exit_triggered and self.strategy.exit.conditions:
-                    if RuleEvaluator.evaluate_rule_group(self.strategy.exit, df, indicators, i):
-                        exit_triggered = True
-                        exit_price = bar_close
-                        exit_reason = "STRATEGY_EXIT_RULE"
-
-                # 5. End of Day Exit check (if intraday session ending)
-                if not exit_triggered and risk.end_of_day_exit and i == len(df) - 1:
-                    exit_triggered = True
-                    exit_price = bar_close
-                    exit_reason = "END_OF_DAY"
-
-                # Process Exit if triggered
-                if exit_triggered:
-                    exit_cost = IndianTransactionCostCalculator.calculate_cost(
-                        "SELL", active_position.quantity, exit_price, self.cost_config
-                    )
-                    active_position.exit_time = timestamp_str
-                    active_position.exit_price = exit_cost.executed_price_with_slippage
-                    active_position.exit_reason = exit_reason
-                    active_position.total_costs += exit_cost.total_cost
-                    active_position.exit_indicators = self._get_indicator_snapshot(indicators, i)
-
-                    # P&L Calculation
-                    gross_pnl = (active_position.exit_price - active_position.entry_price) * active_position.quantity
-                    net_pnl = gross_pnl - active_position.total_costs
-
-                    active_position.gross_pnl = round(gross_pnl, 2)
-                    active_position.net_pnl = round(net_pnl, 2)
-
-                    capital += net_pnl
-                    trades.append(active_position)
-                    active_position = None
-
-            # C. Evaluate Strategy Entry Rules at bar t close (Zero look-ahead: order fills on bar t+1 Open)
-            if active_position is None and pending_order is None:
-                if RuleEvaluator.evaluate_rule_group(self.strategy.entry, df, indicators, i):
-                    # Signal generated at bar t close
-                    signal = Signal(
-                        signal_id=f"SIG_{i:04d}",
+                    # Risk rule creates an Exit Signal -> Exit Order (never directly mutates position)
+                    next_ts = str(df.iloc[i + 1]["timestamp"]) if (i + 1 < len(df) and "timestamp" in df.columns) else f"bar_{i+1}"
+                    exit_signal = Signal(
+                        signal_id=f"SIG_RISK_{i:04d}",
                         timestamp=timestamp_str,
-                        symbol=self.strategy.instrument.symbol,
-                        signal_type=SignalType.BUY,
+                        symbol=symbol,
+                        signal_type=SignalType.SELL,
                         bar_index=i,
-                        trigger_price=bar_close,
-                        reason="ENTRY_RULE_TRIGGERED",
+                        trigger_price=float(risk_event.trigger_price),
+                        reason=risk_event.reason,
                         indicator_snapshot=self._get_indicator_snapshot(indicators, i)
                     )
 
-                    # Next bar timestamp for order eligibility
-                    next_bar_ts = str(df.iloc[i + 1]["timestamp"]) if (i + 1 < len(df) and "timestamp" in df.columns) else f"bar_{i+1}"
-
-                    # Compute quantity
-                    if pos_sizing.type == PositionSizingType.FIXED_QUANTITY:
-                        raw_qty = Decimal(str(pos_sizing.value))
-                    else:
-                        pct_capital = capital * (pos_sizing.value / 100.0)
-                        raw_qty = Decimal(str(round(pct_capital / bar_close, 4)))
-
-                    # Adjust quantity to lot_size if needed
-                    if lot_size > Decimal("1"):
-                        raw_qty = (raw_qty // lot_size) * lot_size
-                        if raw_qty < lot_size:
-                            raw_qty = lot_size
-
-                    order = OrderFactory.create_order_from_signal(
-                        signal=signal,
+                    exit_order = OrderFactory.create_order_from_signal(
+                        signal=exit_signal,
                         strategy_id="STRAT_BACKTEST",
                         strategy_version_id="VER_1",
-                        quantity=raw_qty,
-                        eligible_at_timestamp=next_bar_ts,
-                        instrument_id=self.strategy.instrument.symbol,
+                        quantity=open_pos.quantity,
+                        eligible_at_timestamp=next_ts,
+                        instrument_id=symbol,
                         lot_size=lot_size
                     )
-                    pending_order = order
-                    all_orders.append(order)
+                    pending_order = exit_order
+                    all_orders.append(exit_order)
 
-            # D. Record Mark-to-Market Equity Point
-            current_equity = capital
-            if active_position is not None:
-                unrealized_pnl = (bar_close - active_position.entry_price) * active_position.quantity
-                current_equity += unrealized_pnl
+            # D. Evaluate Strategy Entry Rules if no open position and no pending exit order
+            if open_pos is None and pending_order is None:
+                if RuleEvaluator.evaluate_rule_group(self.strategy.entry, df, indicators, i):
+                    # Check Risk Engine for max positions
+                    entry_risk_decision = RiskEngine.evaluate_entry_risk(
+                        portfolio=portfolio,
+                        max_simultaneous_positions=self.max_simultaneous_positions
+                    )
 
+                    if not entry_risk_decision.allowed:
+                        event_id = f"RSK_REJ_{uuid.uuid4().hex[:12]}"
+                        all_risk_events.append(RiskEvent(
+                            id=event_id,
+                            portfolio_id=portfolio.id,
+                            position_id=None,
+                            symbol=symbol,
+                            event_type=RiskEventType.MAX_POSITION_REJECTED,
+                            timestamp=timestamp_str,
+                            trigger_price=Decimal(str(bar_close)),
+                            reason=entry_risk_decision.reason or "MAX_POSITIONS_REACHED"
+                        ))
+                    else:
+                        # Entry signal generated
+                        signal = Signal(
+                            signal_id=f"SIG_ENT_{i:04d}",
+                            timestamp=timestamp_str,
+                            symbol=symbol,
+                            signal_type=SignalType.BUY,
+                            bar_index=i,
+                            trigger_price=bar_close,
+                            reason="ENTRY_RULE_TRIGGERED",
+                            indicator_snapshot=self._get_indicator_snapshot(indicators, i)
+                        )
+
+                        next_ts = str(df.iloc[i + 1]["timestamp"]) if (i + 1 < len(df) and "timestamp" in df.columns) else f"bar_{i+1}"
+
+                        # Calculate quantity via PositionSizingEngine
+                        order_qty = PositionSizingEngine.calculate_quantity(
+                            position_sizing=pos_sizing,
+                            available_cash=portfolio.cash,
+                            reference_price=Decimal(str(bar_close)),
+                            lot_size=lot_size
+                        )
+
+                        order = OrderFactory.create_order_from_signal(
+                            signal=signal,
+                            strategy_id="STRAT_BACKTEST",
+                            strategy_version_id="VER_1",
+                            quantity=order_qty,
+                            eligible_at_timestamp=next_ts,
+                            instrument_id=symbol,
+                            lot_size=lot_size
+                        )
+                        pending_order = order
+                        all_orders.append(order)
+
+            # E. Record Equity Curve Point
             if current_equity > peak_capital:
                 peak_capital = current_equity
 
@@ -291,20 +333,34 @@ class BacktestEngine:
                 drawdown_percent=round(drawdown_percent, 2)
             ))
 
-        # Handle edge case: pending order generated on final historical bar has no next bar
+        # Handle active trade remaining open at end of simulation
+        if active_trade is not None:
+            last_timestamp = str(df.iloc[-1].get("timestamp", "end"))
+            last_close = float(df.iloc[-1]["close"])
+            active_trade.exit_time = last_timestamp
+            active_trade.exit_price = last_close
+            active_trade.exit_reason = "END_OF_SIMULATION"
+            gross_pnl = (active_trade.exit_price - active_trade.entry_price) * active_trade.quantity
+            active_trade.gross_pnl = round(gross_pnl, 2)
+            active_trade.net_pnl = round(gross_pnl - active_trade.total_costs, 2)
+            trades.append(active_trade)
+
+        # Handle pending order on final candle
         if pending_order is not None and pending_order.status == OrderStatus.CREATED:
             self.execution_simulator.simulate_execution(order=pending_order, bar=None)
 
-        # 4. Calculate Final Performance Metrics
-        res = self._compute_metrics(trades, equity_curve, self.initial_capital, capital)
+        # Compute performance metrics
+        res = self._compute_metrics(trades, equity_curve, self.initial_capital, float(portfolio.equity))
         res.orders = all_orders
         res.executions = all_executions
+        res.portfolio = portfolio
+        res.snapshots = all_snapshots
+        res.risk_events = all_risk_events
+        res.positions = list(portfolio.positions.values())
         return res
 
     def _precalculate_indicators(self, df: pd.DataFrame) -> Dict[str, pd.Series]:
         indicators: Dict[str, pd.Series] = {}
-
-        # Scan entry and exit rules for indicator requirements
         all_conditions = self.strategy.entry.conditions + self.strategy.exit.conditions
 
         for cond in all_conditions:
@@ -359,7 +415,6 @@ class BacktestEngine:
 
         max_dd_percent = max([eq.drawdown_percent for eq in equity_curve]) if equity_curve else 0.0
 
-        # Calculate Sharpe Ratio
         equities = pd.Series([eq.equity for eq in equity_curve])
         returns = equities.pct_change().dropna()
         if len(returns) > 1 and returns.std() > 0:
