@@ -1,8 +1,9 @@
 """
 Portfolio Accounting Service.
 
-Applies Execution fills to Portfolio state, maintains average entry pricing,
-computes realized/unrealized P&L, and performs bar-by-bar mark-to-market revaluation.
+Applies Execution fills and TransactionCostBreakdowns to Portfolio state,
+maintains average entry pricing, computes net realized/unrealized P&L,
+and performs bar-by-bar mark-to-market revaluation.
 """
 
 import uuid
@@ -10,6 +11,7 @@ from decimal import Decimal
 from typing import Dict, Any, Optional, List
 
 from app.domains.execution.models import Execution
+from app.domains.costs.models import TransactionCostBreakdown
 from app.domains.orders.models import OrderSide
 from app.domains.portfolio.models import (
     Portfolio,
@@ -26,20 +28,23 @@ class PortfolioService:
     def __init__(self, portfolio: Portfolio):
         self.portfolio = portfolio
 
-    def apply_execution(self, execution: Execution) -> None:
+    def apply_execution(
+        self,
+        execution: Execution,
+        cost_breakdown: Optional[TransactionCostBreakdown] = None
+    ) -> None:
         """
-        Applies a simulated Execution fill to the Portfolio.
+        Applies a simulated Execution fill and its TransactionCostBreakdown to the Portfolio.
 
         Important Logic:
         1. Idempotency Protection: Ignores execution if execution.id has already been processed.
-        2. Execution Source of Truth: Only Executions modify cash, position quantity, or average entry price.
-        3. Long/Short Entry & Exit Accounting:
-           - Entry increases position size and recalculates weighted average entry price.
-           - Exit calculates realized P&L = (Exit Price - Entry Price) * Quantity for Longs.
-           - Increases cash upon sell and updates portfolio realized P&L.
+        2. Financial Accounting with Costs:
+           - BUY: Cash decrease = (exec_qty * exec_price) + total_cost
+           - SELL: Cash increase = (closed_qty * exec_price) - total_cost
+        3. Net P&L = Gross P&L - Transaction Costs.
         """
         if execution.id in self.portfolio.processed_execution_ids:
-            return  # Idempotent guard: already applied
+            return  # Idempotent guard
 
         self.portfolio.processed_execution_ids.add(execution.id)
 
@@ -48,10 +53,10 @@ class PortfolioService:
         exec_qty = execution.quantity
         exec_price = execution.execution_price
         timestamp = execution.timestamp
+        total_cost = cost_breakdown.total_cost if cost_breakdown is not None else Decimal("0.0")
 
         existing_pos = self.portfolio.positions.get(symbol)
 
-        # Check if execution is a BUY / Long Entry / Short Exit
         is_buy_intent = exec_side in ("BUY", "LONG_ENTRY", OrderSide.BUY.value, OrderSide.LONG_ENTRY.value)
         is_sell_intent = exec_side in ("SELL", "LONG_EXIT", OrderSide.SELL.value, OrderSide.LONG_EXIT.value)
 
@@ -72,23 +77,24 @@ class PortfolioService:
                     last_updated_at=timestamp
                 )
                 self.portfolio.positions[symbol] = new_pos
-                self.portfolio.cash -= (exec_qty * exec_price)
+                self.portfolio.cash -= ((exec_qty * exec_price) + total_cost)
             elif existing_pos.side == PositionSide.LONG:
                 # Add to existing LONG position (Weighted Average Entry Price)
-                total_cost = (existing_pos.quantity * existing_pos.average_entry_price) + (exec_qty * exec_price)
+                total_cost_basis = (existing_pos.quantity * existing_pos.average_entry_price) + (exec_qty * exec_price)
                 new_qty = existing_pos.quantity + exec_qty
-                existing_pos.average_entry_price = total_cost / new_qty
+                existing_pos.average_entry_price = total_cost_basis / new_qty
                 existing_pos.quantity = new_qty
                 existing_pos.last_updated_at = timestamp
-                self.portfolio.cash -= (exec_qty * exec_price)
+                self.portfolio.cash -= ((exec_qty * exec_price) + total_cost)
             elif existing_pos.side == PositionSide.SHORT:
                 # Close/Reduce existing SHORT position
                 closed_qty = min(existing_pos.quantity, exec_qty)
-                realized_pnl = (existing_pos.average_entry_price - exec_price) * closed_qty
+                gross_realized = (existing_pos.average_entry_price - exec_price) * closed_qty
+                net_realized = gross_realized - total_cost
 
-                existing_pos.realized_pnl += realized_pnl
-                self.portfolio.realized_pnl += realized_pnl
-                self.portfolio.cash += (closed_qty * existing_pos.average_entry_price) + realized_pnl
+                existing_pos.realized_pnl += net_realized
+                self.portfolio.realized_pnl += net_realized
+                self.portfolio.cash += ((closed_qty * existing_pos.average_entry_price) + net_realized)
 
                 if exec_qty >= existing_pos.quantity:
                     existing_pos.status = PositionStatus.CLOSED
@@ -101,11 +107,12 @@ class PortfolioService:
             if existing_pos is not None and existing_pos.side == PositionSide.LONG:
                 # Close/Reduce existing LONG position
                 closed_qty = min(existing_pos.quantity, exec_qty)
-                realized_pnl = (exec_price - existing_pos.average_entry_price) * closed_qty
+                gross_realized = (exec_price - existing_pos.average_entry_price) * closed_qty
+                net_realized = gross_realized - total_cost
 
-                existing_pos.realized_pnl += realized_pnl
-                self.portfolio.realized_pnl += realized_pnl
-                self.portfolio.cash += (closed_qty * exec_price)
+                existing_pos.realized_pnl += net_realized
+                self.portfolio.realized_pnl += net_realized
+                self.portfolio.cash += ((closed_qty * exec_price) - total_cost)
 
                 if exec_qty >= existing_pos.quantity:
                     existing_pos.status = PositionStatus.CLOSED
@@ -117,12 +124,6 @@ class PortfolioService:
     def mark_to_market(self, bar_dict: Dict[str, Any], timestamp: str) -> PortfolioSnapshot:
         """
         Performs bar-by-bar mark-to-market portfolio revaluation.
-
-        Important Logic:
-        - Updates open position current market price to bar_close.
-        - Recalculates unrealized P&L, gross exposure, net exposure, and equity.
-        - Equity = Cash + Position Market Value.
-        - Generates a PortfolioSnapshot.
         """
         bar_close_raw = bar_dict.get("close")
         if bar_close_raw is not None:

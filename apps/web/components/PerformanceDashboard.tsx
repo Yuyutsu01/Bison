@@ -113,18 +113,16 @@ export default function PerformanceDashboard({ data }: Props) {
           <div className="text-xs text-gray-500 mt-1">Peak-to-Trough Decline</div>
         </div>
 
-        {/* Win Rate & Profit Factor Card */}
+        {/* Transaction Costs Card */}
         <div className="glass-panel glass-panel-hover p-5 rounded-2xl">
           <div className="flex items-center justify-between text-gray-400 text-xs font-bold uppercase tracking-wider">
-            <span>Win Rate</span>
-            <PieChart className="w-4 h-4 text-emerald-400" />
+            <span>Transaction Costs</span>
+            <DollarSign className="w-4 h-4 text-purple-400" />
           </div>
-          <div className="text-2xl font-bold text-emerald-400 mt-2">
-            {data.win_rate ?? 0.0}%
+          <div className="text-2xl font-bold text-amber-400 mt-2">
+            ₹{data.trades ? data.trades.reduce((acc, t) => acc + (t.total_costs || 0), 0).toFixed(2) : '0.00'}
           </div>
-          <div className="text-xs text-gray-500 mt-1">
-            Profit Factor: {data.profit_factor ?? 0.0} ({data.total_trades} trades)
-          </div>
+          <div className="text-xs text-gray-500 mt-1">Brokerage + STT + Taxes</div>
         </div>
       </div>
 

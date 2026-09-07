@@ -20,7 +20,7 @@ from app.db.session import get_db
 from app.db.models import (
     BacktestRunModel, StrategyVersionModel, StrategyModel, TradeModel,
     OrderModel, ExecutionModel, PortfolioModel, PositionModel,
-    PortfolioSnapshotModel, RiskEventModel
+    PortfolioSnapshotModel, RiskEventModel, TransactionCostModel
 )
 from app.core.security import get_current_user_id
 from app.domains.jobs.worker import execute_backtest_job
@@ -32,6 +32,20 @@ class CreateBacktestRequest(BaseModel):
     strategy_id: str
     version: Optional[int] = None
     initial_capital: float = 100000.0
+
+
+class TransactionCostBreakdownDTO(BaseModel):
+    id: str
+    execution_id: str
+    turnover: float
+    brokerage: float
+    stt: float
+    exchange_charges: float
+    sebi_fees: float
+    stamp_duty: float
+    gst: float
+    other_charges: float
+    total_cost: float
 
 
 class BacktestSummaryDTO(BaseModel):
@@ -477,3 +491,35 @@ async def export_trades_csv(
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
+
+
+@router.get("/{backtest_id}/costs", response_model=List[TransactionCostBreakdownDTO])
+async def get_backtest_costs(
+    backtest_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db)
+):
+    """Retrieve all transaction cost breakdowns for executions in a backtest run."""
+    result = await db.execute(
+        select(TransactionCostModel)
+        .join(BacktestRunModel)
+        .where(TransactionCostModel.backtest_run_id == backtest_id, BacktestRunModel.user_id == user_id)
+    )
+    costs = result.scalars().all()
+    return [
+        TransactionCostBreakdownDTO(
+            id=c.id,
+            execution_id=c.execution_id,
+            turnover=c.turnover,
+            brokerage=c.brokerage,
+            stt=c.stt,
+            exchange_charges=c.exchange_charges,
+            sebi_fees=c.sebi_fees,
+            stamp_duty=c.stamp_duty,
+            gst=c.gst,
+            other_charges=c.other_charges,
+            total_cost=c.total_cost
+        )
+        for c in costs
+    ]
+

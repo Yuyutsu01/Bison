@@ -3,7 +3,7 @@ SQLAlchemy Relational ORM Models.
 
 Defines persistence schema for Users, Strategies, Strategy Versions, Instruments, Datasets,
 Backtest Runs, Executed Trades, Orders, Simulated Executions, Portfolios, Positions,
-Portfolio Snapshots, and Risk Events.
+Portfolio Snapshots, Risk Events, Cost Profiles, Cost Profile Versions, and Transaction Costs.
 """
 
 import uuid
@@ -89,6 +89,7 @@ class BacktestRunModel(Base):
     id = Column(String(36), primary_key=True, default=generate_uuid)
     user_id = Column(String(36), ForeignKey("users.id"), nullable=False)
     strategy_version_id = Column(String(36), ForeignKey("strategy_versions.id"), nullable=False)
+    cost_profile_version_id = Column(String(36), ForeignKey("cost_profile_versions.id"), nullable=True)
     dataset_id = Column(String(36), ForeignKey("datasets.id"), nullable=True)
     status = Column(String(50), default="QUEUED")  # QUEUED, RUNNING, COMPLETED, FAILED
     error_message = Column(Text, nullable=True)
@@ -114,6 +115,8 @@ class BacktestRunModel(Base):
     portfolio = relationship("PortfolioModel", back_populates="backtest_run", uselist=False, cascade="all, delete-orphan")
     snapshots = relationship("PortfolioSnapshotModel", back_populates="backtest_run", cascade="all, delete-orphan")
     risk_events = relationship("RiskEventModel", back_populates="backtest_run", cascade="all, delete-orphan")
+    transaction_costs = relationship("TransactionCostModel", back_populates="backtest_run", cascade="all, delete-orphan")
+    cost_profile_version = relationship("CostProfileVersionModel", back_populates="backtest_runs")
 
 
 class TradeModel(Base):
@@ -182,6 +185,7 @@ class ExecutionModel(Base):
 
     order = relationship("OrderModel", back_populates="executions")
     backtest_run = relationship("BacktestRunModel", back_populates="executions")
+    transaction_cost = relationship("TransactionCostModel", back_populates="execution", uselist=False, cascade="all, delete-orphan")
 
 
 class PortfolioModel(Base):
@@ -256,3 +260,64 @@ class RiskEventModel(Base):
     metadata_json = Column(JSON, nullable=True)
 
     backtest_run = relationship("BacktestRunModel", back_populates="risk_events")
+
+
+class CostProfileModel(Base):
+    __tablename__ = "cost_profiles"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    asset_class = Column(String(50), default="EQUITY_INTRADAY")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    versions = relationship("CostProfileVersionModel", back_populates="profile", cascade="all, delete-orphan")
+
+
+class CostProfileVersionModel(Base):
+    __tablename__ = "cost_profile_versions"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    cost_profile_id = Column(String(36), ForeignKey("cost_profiles.id"), nullable=False)
+    version = Column(Integer, nullable=False)
+    name = Column(String(255), nullable=False)
+    effective_from = Column(String(50), nullable=False)
+    effective_to = Column(String(50), nullable=False)
+    asset_class = Column(String(50), nullable=False)
+    brokerage_model = Column(String(50), default="PERCENTAGE_WITH_CAP")
+    brokerage_rate = Column(Float, default=0.0003)
+    brokerage_cap = Column(Float, default=20.0)
+    brokerage_flat = Column(Float, default=20.0)
+    stt_buy_rate = Column(Float, default=0.0)
+    stt_sell_rate = Column(Float, default=0.00025)
+    exchange_charge_rate = Column(Float, default=0.0000345)
+    sebi_fee_rate = Column(Float, default=0.000001)
+    stamp_duty_rate = Column(Float, default=0.00003)
+    gst_rate = Column(Float, default=0.18)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    profile = relationship("CostProfileModel", back_populates="versions")
+    backtest_runs = relationship("BacktestRunModel", back_populates="cost_profile_version")
+    transaction_costs = relationship("TransactionCostModel", back_populates="cost_profile_version")
+
+
+class TransactionCostModel(Base):
+    __tablename__ = "transaction_costs"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    execution_id = Column(String(36), ForeignKey("executions.id"), nullable=False, unique=True)
+    backtest_run_id = Column(String(36), ForeignKey("backtest_runs.id"), nullable=False)
+    cost_profile_version_id = Column(String(36), ForeignKey("cost_profile_versions.id"), nullable=False)
+    turnover = Column(Float, nullable=False)
+    brokerage = Column(Float, nullable=False)
+    stt = Column(Float, nullable=False)
+    exchange_charges = Column(Float, nullable=False)
+    sebi_fees = Column(Float, nullable=False)
+    stamp_duty = Column(Float, nullable=False)
+    gst = Column(Float, nullable=False)
+    other_charges = Column(Float, default=0.0)
+    total_cost = Column(Float, nullable=False)
+
+    execution = relationship("ExecutionModel", back_populates="transaction_cost")
+    backtest_run = relationship("BacktestRunModel", back_populates="transaction_costs")
+    cost_profile_version = relationship("CostProfileVersionModel", back_populates="transaction_costs")

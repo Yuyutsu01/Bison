@@ -12,6 +12,7 @@ from app.domains.auth.routes import router as auth_router
 from app.domains.strategies.routes import router as strategy_router
 from app.domains.instruments.routes import router as instrument_router
 from app.domains.backtesting.routes import router as backtest_router
+from app.domains.costs.routes import router as cost_router
 
 app = FastAPI(
     title="Bison Algorithmic Trading Platform API",
@@ -51,3 +52,4 @@ app.include_router(auth_router, prefix="/api/v1")
 app.include_router(strategy_router, prefix="/api/v1")
 app.include_router(instrument_router, prefix="/api/v1")
 app.include_router(backtest_router, prefix="/api/v1")
+app.include_router(cost_router, prefix="/api/v1")

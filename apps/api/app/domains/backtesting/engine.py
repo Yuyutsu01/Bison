@@ -3,7 +3,7 @@ Deterministic Event-Driven Backtesting Simulator Engine.
 
 Executes rule-based quantitative trading strategies on historical OHLCV data.
 Enforces zero look-ahead bias (orders generated on bar t execute strictly on bar t+1 Open).
-Integrates Order Domain, Execution Simulator, Portfolio Engine, and Risk Engine.
+Integrates Order Domain, Execution Simulator, Cost Engine, Portfolio Engine, and Risk Engine.
 """
 
 import uuid
@@ -31,6 +31,10 @@ from app.domains.portfolio.service import PortfolioService
 from app.domains.portfolio.sizing import PositionSizingEngine
 from app.domains.risk.models import RiskEvent, RiskEventType
 from app.domains.risk.engine import RiskEngine
+
+from app.domains.costs.models import CostProfileVersion, TransactionCostBreakdown, AssetClass, BrokerageModel
+from app.domains.costs.engine import TransactionCostEngine
+from app.domains.costs.effective_date import CostProfileResolver
 
 
 @dataclass
@@ -81,10 +85,12 @@ class BacktestResult:
     snapshots: List[PortfolioSnapshot] = field(default_factory=list)
     risk_events: List[RiskEvent] = field(default_factory=list)
     positions: List[Position] = field(default_factory=list)
+    transaction_costs: List[TransactionCostBreakdown] = field(default_factory=list)
+    total_transaction_costs: float = 0.0
 
 
 class BacktestEngine:
-    """Core event-driven simulation engine integrating Portfolio & Risk Engine."""
+    """Core event-driven simulation engine integrating Cost, Portfolio & Risk Engines."""
 
     def __init__(
         self,
@@ -92,6 +98,7 @@ class BacktestEngine:
         initial_capital: float = 100000.0,
         cost_config: CostModelConfig = CostModelConfig(),
         slippage_model: Optional[SlippageModel] = None,
+        cost_profile_version: Optional[CostProfileVersion] = None,
         max_simultaneous_positions: Optional[int] = None
     ):
         self.strategy = strategy
@@ -109,6 +116,26 @@ class BacktestEngine:
             self.slippage_model = FixedPointsSlippage(Decimal(str(cost_config.slippage_value)))
 
         self.execution_simulator = ExecutionSimulator(slippage_model=self.slippage_model)
+
+        self.cost_profile_version = cost_profile_version or CostProfileVersion(
+            id="DEFAULT_EQUITY_INTRADAY_V1",
+            profile_id="DEFAULT_EQUITY_INTRADAY",
+            name="NSE Equity Intraday Cost Profile",
+            version=1,
+            effective_from="2000-01-01",
+            effective_to="2099-12-31",
+            asset_class=AssetClass.EQUITY_INTRADAY,
+            brokerage_model=BrokerageModel.PERCENTAGE_WITH_CAP,
+            brokerage_rate=Decimal(str(cost_config.brokerage_percent_cap)),
+            brokerage_cap=Decimal(str(cost_config.brokerage_per_order)),
+            brokerage_flat=Decimal(str(cost_config.brokerage_per_order)),
+            stt_buy_rate=Decimal("0.0"),
+            stt_sell_rate=Decimal(str(cost_config.stt_sell_percent)),
+            exchange_charge_rate=Decimal(str(cost_config.exchange_charge_percent)),
+            sebi_fee_rate=Decimal(str(cost_config.sebi_charge_percent)),
+            stamp_duty_rate=Decimal(str(cost_config.stamp_duty_buy_percent)),
+            gst_rate=Decimal(str(cost_config.gst_percent))
+        )
 
     def run(self, df: pd.DataFrame) -> BacktestResult:
         if df.empty or len(df) < 2:
@@ -142,6 +169,7 @@ class BacktestEngine:
         trades: List[TradeRecord] = []
         all_orders: List[Order] = []
         all_executions: List[Execution] = []
+        all_transaction_costs: List[TransactionCostBreakdown] = []
         all_snapshots: List[PortfolioSnapshot] = []
         all_risk_events: List[RiskEvent] = []
         equity_curve: List[EquityPoint] = []
@@ -183,11 +211,18 @@ class BacktestEngine:
                     exec_qty = float(execution.quantity)
                     exec_price = float(execution.execution_price)
 
-                    # Source of Truth: Apply Execution to Portfolio
-                    portfolio_service.apply_execution(execution)
+                    # Calculate Transaction Costs via TransactionCostEngine
+                    cost_breakdown = TransactionCostEngine.calculate_cost_breakdown(
+                        execution=execution,
+                        profile_version=self.cost_profile_version
+                    )
+                    all_transaction_costs.append(cost_breakdown)
+                    exec_cost_val = float(cost_breakdown.total_cost)
+
+                    # Source of Truth: Apply Execution and Cost Breakdown to Portfolio
+                    portfolio_service.apply_execution(execution, cost_breakdown)
 
                     if execution.side in ("BUY", "LONG_ENTRY"):
-                        entry_cost = IndianTransactionCostCalculator.calculate_cost("BUY", exec_qty, exec_price, self.cost_config)
                         trade_counter += 1
                         active_trade = TradeRecord(
                             trade_id=f"TRD_{trade_counter:04d}",
@@ -196,15 +231,14 @@ class BacktestEngine:
                             entry_time=timestamp_str,
                             entry_price=exec_price,
                             quantity=exec_qty,
-                            total_costs=entry_cost.total_cost,
+                            total_costs=exec_cost_val,
                             entry_indicators=self._get_indicator_snapshot(indicators, i)
                         )
                     elif execution.side in ("SELL", "LONG_EXIT") and active_trade is not None:
-                        exit_cost = IndianTransactionCostCalculator.calculate_cost("SELL", exec_qty, exec_price, self.cost_config)
                         active_trade.exit_time = timestamp_str
                         active_trade.exit_price = exec_price
                         active_trade.exit_reason = pending_order.metadata.get("signal_reason", "EXIT_ORDER")
-                        active_trade.total_costs += exit_cost.total_cost
+                        active_trade.total_costs += exec_cost_val
                         active_trade.exit_indicators = self._get_indicator_snapshot(indicators, i)
 
                         gross_pnl = (active_trade.exit_price - active_trade.entry_price) * active_trade.quantity
@@ -237,7 +271,6 @@ class BacktestEngine:
                 if risk_event is not None:
                     all_risk_events.append(risk_event)
 
-                    # Risk rule creates an Exit Signal -> Exit Order (never directly mutates position)
                     next_ts = str(df.iloc[i + 1]["timestamp"]) if (i + 1 < len(df) and "timestamp" in df.columns) else f"bar_{i+1}"
                     exit_signal = Signal(
                         signal_id=f"SIG_RISK_{i:04d}",
@@ -265,7 +298,6 @@ class BacktestEngine:
             # D. Evaluate Strategy Entry Rules if no open position and no pending exit order
             if open_pos is None and pending_order is None:
                 if RuleEvaluator.evaluate_rule_group(self.strategy.entry, df, indicators, i):
-                    # Check Risk Engine for max positions
                     entry_risk_decision = RiskEngine.evaluate_entry_risk(
                         portfolio=portfolio,
                         max_simultaneous_positions=self.max_simultaneous_positions
@@ -284,7 +316,6 @@ class BacktestEngine:
                             reason=entry_risk_decision.reason or "MAX_POSITIONS_REACHED"
                         ))
                     else:
-                        # Entry signal generated
                         signal = Signal(
                             signal_id=f"SIG_ENT_{i:04d}",
                             timestamp=timestamp_str,
@@ -298,7 +329,6 @@ class BacktestEngine:
 
                         next_ts = str(df.iloc[i + 1]["timestamp"]) if (i + 1 < len(df) and "timestamp" in df.columns) else f"bar_{i+1}"
 
-                        # Calculate quantity via PositionSizingEngine
                         order_qty = PositionSizingEngine.calculate_quantity(
                             position_sizing=pos_sizing,
                             available_cash=portfolio.cash,
@@ -357,6 +387,8 @@ class BacktestEngine:
         res.snapshots = all_snapshots
         res.risk_events = all_risk_events
         res.positions = list(portfolio.positions.values())
+        res.transaction_costs = all_transaction_costs
+        res.total_transaction_costs = float(sum(c.total_cost for c in all_transaction_costs))
         return res
 
     def _precalculate_indicators(self, df: pd.DataFrame) -> Dict[str, pd.Series]:

@@ -129,6 +129,47 @@ export interface EquityPointDTO {
   drawdown_percent: number;
 }
 
+export interface CostProfileVersionDTO {
+  id: string;
+  version: number;
+  name: string;
+  effective_from: string;
+  effective_to: string;
+  asset_class: string;
+  brokerage_model: string;
+  brokerage_rate: number;
+  brokerage_cap: number;
+  brokerage_flat: number;
+  stt_buy_rate: number;
+  stt_sell_rate: number;
+  exchange_charge_rate: number;
+  sebi_fee_rate: number;
+  stamp_duty_rate: number;
+  gst_rate: number;
+}
+
+export interface CostProfileDTO {
+  id: string;
+  name: string;
+  description?: string;
+  asset_class: string;
+  versions: CostProfileVersionDTO[];
+}
+
+export interface TransactionCostBreakdownDTO {
+  id: string;
+  execution_id: string;
+  turnover: number;
+  brokerage: number;
+  stt: number;
+  exchange_charges: number;
+  sebi_fees: number;
+  stamp_duty: number;
+  gst: number;
+  other_charges: number;
+  total_cost: number;
+}
+
 export interface BacktestDetailDTO {
   id: string;
   strategy_id: string;
@@ -148,5 +189,17 @@ export interface BacktestDetailDTO {
   portfolio?: PortfolioDTO;
   positions?: PositionDTO[];
   risk_events?: RiskEventDTO[];
+  costs?: TransactionCostBreakdownDTO[];
   created_at: string;
 }
+
+export async function getCostProfiles(): Promise<CostProfileDTO[]> {
+  const response = await apiClient.get<CostProfileDTO[]>('/cost-profiles');
+  return response.data;
+}
+
+export async function getBacktestCosts(backtestId: string): Promise<TransactionCostBreakdownDTO[]> {
+  const response = await apiClient.get<TransactionCostBreakdownDTO[]>(`/backtests/${backtestId}/costs`);
+  return response.data;
+}
+
