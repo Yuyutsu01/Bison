@@ -9,17 +9,16 @@
 
 ---
 
-## 🌟 Key Features & Iterations Completed
+## 🌟 Core Platform Capabilities
 
-### Implemented Iterations (0 through 7)
-1. **Iteration 0 (Foundation)**: Monorepo infrastructure, Next.js frontend, FastAPI backend, PostgreSQL, Redis, worker infrastructure, Docker Compose, CI pipeline.
-2. **Iteration 1 (Instruments & Market Data)**: Instrument model, NSE instruments, NIFTY/BANKNIFTY fixtures, CSV ingestion, data validation, missing candle detection, OHLCV normalization.
-3. **Iteration 2 (Strategy DSL)**: Formal JSON strategy specification schema, entry/exit condition tree, Pydantic validation models.
-4. **Iteration 3 (Indicator Engine)**: SMA, EMA, RSI, MACD, Bollinger Bands, ATR calculations with warm-up protection and numerical tests.
-5. **Iteration 4 (Signal Engine)**: Deterministic signal generation (`BUY`, `SELL`, `EXIT`), logical condition tree evaluation (`AND`, `OR`, `NOT`), and crossover detection.
-6. **Iteration 5 (Order & Execution Simulator)**: Strongly typed Order domain, state machine lifecycle (`CREATED` -> `PENDING` -> `FILLED`), `NEXT_BAR_OPEN` execution policy, slippage models (`Zero`, `FixedPoints`, `Percentage`), tick size normalization, idempotency protection, and REST API endpoints.
-7. **Iteration 6 (Portfolio & Risk Engine)**: Execution-driven portfolio state machine, weighted average entry price accounting, realized/unrealized P&L tracking, position sizing engine (`FixedQuantity`, `FixedCapital`, `PercentCapital`), risk controls (`StopLoss`, `Target`, `TrailingStop`, `MaxHoldingBars`, `EODExit`, `MaxPositions`), intrabar conflict policy, gap execution rules, ORM persistence, and REST endpoints.
-8. **Iteration 7 (Indian Transaction Cost & Cost Engine)**: Modular, versioned, effective-dated Indian transaction cost engine calculating Brokerage, STT, Exchange Turnover Fees, SEBI Fees, Stamp Duty, and 18% GST (on taxable base), integrated into Portfolio net cash accounting & P&L with full DB persistence, REST endpoints, and UI dashboard.
+1. **Foundation & Infrastructure**: Monorepo infrastructure, Next.js frontend, FastAPI backend, PostgreSQL, Redis, worker infrastructure, Docker Compose, CI pipeline.
+2. **Instruments & Market Data**: Instrument model, NSE instruments, NIFTY/BANKNIFTY fixtures, CSV ingestion, data validation, missing candle detection, OHLCV normalization.
+3. **Strategy DSL**: Formal JSON strategy specification schema, entry/exit condition tree, Pydantic validation models.
+4. **Indicator Engine**: SMA, EMA, RSI, MACD, Bollinger Bands, ATR calculations with warm-up protection and numerical tests.
+5. **Signal Engine**: Deterministic signal generation (`BUY`, `SELL`, `EXIT`), logical condition tree evaluation (`AND`, `OR`, `NOT`), and crossover detection.
+6. **Order & Execution Simulator**: Strongly typed Order domain, state machine lifecycle (`CREATED` -> `PENDING` -> `FILLED`), `NEXT_BAR_OPEN` execution policy, slippage models (`Zero`, `FixedPoints`, `Percentage`), tick size normalization, idempotency protection, and REST API endpoints.
+7. **Portfolio & Risk Engine**: Execution-driven portfolio state machine, weighted average entry price accounting, realized/unrealized P&L tracking, position sizing engine (`FixedQuantity`, `FixedCapital`, `PercentCapital`), risk controls (`StopLoss`, `Target`, `TrailingStop`, `MaxHoldingBars`, `EODExit`, `MaxPositions`), intrabar conflict policy, gap execution rules, ORM persistence, and REST endpoints.
+8. **Indian Transaction Cost & Charges Engine**: Modular, versioned, effective-dated Indian transaction cost engine calculating Brokerage, STT, Exchange Turnover Fees, SEBI Fees, Stamp Duty, and 18% GST (on taxable base), integrated into Portfolio net cash accounting & P&L with full DB persistence, REST endpoints, and UI dashboard.
 
 ---
 
