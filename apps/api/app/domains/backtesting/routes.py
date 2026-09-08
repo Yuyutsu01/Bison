@@ -1,17 +1,18 @@
 """
 Backtesting REST API Routes.
 
-Handles backtest submission, status polling, results retrieval, trade inspection,
-order/execution querying, portfolio state inspection, risk events, and CSV export.
+Handles backtest submission, status polling, cancellation, results retrieval,
+trade inspection, order/execution querying, portfolio state inspection, risk events,
+and CSV export.
 """
 
-import asyncio
 import io
 import csv
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+from datetime import datetime
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Header, Query
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 from sqlalchemy.orm import selectinload
@@ -24,6 +25,8 @@ from app.db.models import (
 )
 from app.core.security import get_current_user_id
 from app.domains.jobs.worker import execute_backtest_job
+from app.domains.backtesting.configuration import BacktestConfiguration, RunIdentityCalculator, ENGINE_VERSION
+from app.domains.backtesting.state_machine import BacktestStatus, BacktestStateMachine
 
 router = APIRouter(prefix="/backtests", tags=["Backtesting"])
 
@@ -31,7 +34,23 @@ router = APIRouter(prefix="/backtests", tags=["Backtesting"])
 class CreateBacktestRequest(BaseModel):
     strategy_id: str
     version: Optional[int] = None
-    initial_capital: float = 100000.0
+    initial_capital: float = Field(default=100000.0, gt=0)
+    dataset_id: str = "DEFAULT_NIFTY_5M"
+    slippage_type: str = "ZERO"
+    slippage_value: float = Field(default=0.0, ge=0)
+    cost_profile_version_id: Optional[str] = None
+
+
+class BacktestStatusDTO(BaseModel):
+    id: str
+    status: str
+    progress: float
+    processed_bars: int
+    total_bars: int
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    error_code: Optional[str] = None
+    error_message: Optional[str] = None
 
 
 class TransactionCostBreakdownDTO(BaseModel):
@@ -53,6 +72,10 @@ class BacktestSummaryDTO(BaseModel):
     strategy_id: str
     strategy_name: str
     status: str
+    progress: float = 0.0
+    run_identity: Optional[str] = None
+    engine_version: Optional[str] = None
+    error_code: Optional[str] = None
     error_message: Optional[str] = None
     initial_capital: float
     final_capital: Optional[float] = None
@@ -151,6 +174,7 @@ class RiskEventDTO(BaseModel):
 
 class BacktestDetailDTO(BacktestSummaryDTO):
     equity_curve: Optional[list] = None
+    execution_metrics: Optional[dict] = None
     trades: List[TradeDTO] = []
     portfolio: Optional[PortfolioDTO] = None
 
@@ -159,10 +183,20 @@ class BacktestDetailDTO(BacktestSummaryDTO):
 async def run_backtest(
     req: CreateBacktestRequest,
     background_tasks: BackgroundTasks,
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     user_id: str = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db)
 ):
-    # Retrieve Strategy
+    """
+    Asynchronously submits a backtest job for execution.
+    
+    Important Logic:
+    1. Validates strategy and target version existence.
+    2. Builds BacktestConfiguration and calculates deterministic run_identity.
+    3. Prevents duplicate active jobs with identical run identity.
+    4. Persists QUEUED backtest record and dispatches background worker.
+    """
+    # 1. Retrieve & Validate Strategy
     result = await db.execute(
         select(StrategyModel)
         .options(selectinload(StrategyModel.versions))
@@ -177,18 +211,71 @@ async def run_backtest(
     if not target_version:
         raise HTTPException(status_code=404, detail=f"Strategy version v{target_ver_num} not found.")
 
-    # Create Backtest Run Record
+    # 2. Build Configuration & Deterministic Run Identity
+    dsl_dict = target_version.dsl_json or {}
+    instrument_dict = dsl_dict.get("instrument", {})
+    inst_symbol = instrument_dict.get("symbol", "NIFTY50") if isinstance(instrument_dict, dict) else "NIFTY50"
+    inst_tf = instrument_dict.get("timeframe", "5m") if isinstance(instrument_dict, dict) else "5m"
+
+    config = BacktestConfiguration(
+        strategy_version_id=target_version.id,
+        dataset_id=req.dataset_id,
+        instrument_id=inst_symbol,
+        timeframe=inst_tf,
+        initial_capital=req.initial_capital,
+        slippage_type=req.slippage_type,
+        slippage_value=req.slippage_value,
+        cost_profile_version_id=req.cost_profile_version_id,
+        engine_version=ENGINE_VERSION
+    )
+
+    run_identity = RunIdentityCalculator.calculate_run_identity(
+        config=config,
+        strategy_dsl_version=target_version.version
+    )
+
+    # 3. Prevent duplicate simultaneous execution of identical active backtest run
+    active_dup_result = await db.execute(
+        select(BacktestRunModel)
+        .where(
+            BacktestRunModel.user_id == user_id,
+            BacktestRunModel.run_identity == run_identity,
+            BacktestRunModel.status.in_([BacktestStatus.QUEUED.value, BacktestStatus.RUNNING.value])
+        )
+    )
+    active_dup = active_dup_result.scalars().first()
+    if active_dup:
+        return BacktestSummaryDTO(
+            id=active_dup.id,
+            strategy_id=strategy.id,
+            strategy_name=strategy.name,
+            status=active_dup.status,
+            progress=active_dup.progress,
+            run_identity=active_dup.run_identity,
+            engine_version=active_dup.engine_version,
+            initial_capital=active_dup.initial_capital,
+            created_at=active_dup.created_at.isoformat()
+        )
+
+    # 4. Create Backtest Run Record
     backtest_run = BacktestRunModel(
         user_id=user_id,
         strategy_version_id=target_version.id,
+        cost_profile_version_id=req.cost_profile_version_id,
         initial_capital=req.initial_capital,
-        status="QUEUED"
+        configuration_json=config.model_dump(),
+        run_identity=run_identity,
+        engine_version=ENGINE_VERSION,
+        status=BacktestStatus.QUEUED.value,
+        progress=0.0,
+        processed_bars=0,
+        total_bars=0
     )
     db.add(backtest_run)
     await db.commit()
     await db.refresh(backtest_run)
 
-    # Dispatch Background Worker Execution
+    # 5. Dispatch Background Worker Execution
     background_tasks.add_task(execute_backtest_job, backtest_run.id)
 
     return BacktestSummaryDTO(
@@ -196,6 +283,9 @@ async def run_backtest(
         strategy_id=strategy.id,
         strategy_name=strategy.name,
         status=backtest_run.status,
+        progress=backtest_run.progress,
+        run_identity=backtest_run.run_identity,
+        engine_version=backtest_run.engine_version,
         initial_capital=backtest_run.initial_capital,
         created_at=backtest_run.created_at.isoformat()
     )
@@ -203,22 +293,39 @@ async def run_backtest(
 
 @router.get("", response_model=List[BacktestSummaryDTO])
 async def list_backtests(
+    status_filter: Optional[str] = Query(None, alias="status"),
+    strategy_id: Optional[str] = None,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
     user_id: str = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db)
 ):
-    result = await db.execute(
+    """List user's backtests with optional filtering, pagination, and date ordering."""
+    query = (
         select(BacktestRunModel)
         .options(selectinload(BacktestRunModel.strategy_version).selectinload(StrategyVersionModel.strategy))
         .where(BacktestRunModel.user_id == user_id)
-        .order_by(desc(BacktestRunModel.created_at))
     )
+
+    if status_filter:
+        query = query.where(BacktestRunModel.status == status_filter.upper())
+    if strategy_id:
+        query = query.join(BacktestRunModel.strategy_version).where(StrategyVersionModel.strategy_id == strategy_id)
+
+    query = query.order_by(desc(BacktestRunModel.created_at)).limit(limit).offset(offset)
+
+    result = await db.execute(query)
     runs = result.scalars().all()
     return [
         BacktestSummaryDTO(
             id=r.id,
-            strategy_id=r.strategy_version.strategy.id if r.strategy_version else "",
-            strategy_name=r.strategy_version.strategy.name if r.strategy_version else "Strategy",
+            strategy_id=r.strategy_version.strategy.id if r.strategy_version and r.strategy_version.strategy else "",
+            strategy_name=r.strategy_version.strategy.name if r.strategy_version and r.strategy_version.strategy else "Strategy",
             status=r.status,
+            progress=r.progress or 0.0,
+            run_identity=r.run_identity,
+            engine_version=r.engine_version,
+            error_code=r.error_code,
             error_message=r.error_message,
             initial_capital=r.initial_capital,
             final_capital=r.final_capital,
@@ -233,12 +340,87 @@ async def list_backtests(
     ]
 
 
+@router.get("/{backtest_id}/status", response_model=BacktestStatusDTO)
+async def get_backtest_status(
+    backtest_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db)
+):
+    """Fast status polling endpoint for tracking simulation progress."""
+    result = await db.execute(
+        select(BacktestRunModel).where(
+            BacktestRunModel.id == backtest_id,
+            BacktestRunModel.user_id == user_id
+        )
+    )
+    run = result.scalars().first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Backtest run not found.")
+
+    return BacktestStatusDTO(
+        id=run.id,
+        status=run.status,
+        progress=run.progress or 0.0,
+        processed_bars=run.processed_bars or 0,
+        total_bars=run.total_bars or 0,
+        started_at=run.started_at.isoformat() if run.started_at else None,
+        completed_at=run.completed_at.isoformat() if run.completed_at else None,
+        error_code=run.error_code,
+        error_message=run.error_message
+    )
+
+
+@router.post("/{backtest_id}/cancel", response_model=BacktestStatusDTO)
+async def cancel_backtest(
+    backtest_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db)
+):
+    """Requests safe cancellation of a queued or running backtest job."""
+    result = await db.execute(
+        select(BacktestRunModel).where(
+            BacktestRunModel.id == backtest_id,
+            BacktestRunModel.user_id == user_id
+        )
+    )
+    run = result.scalars().first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Backtest run not found.")
+
+    if run.status in (BacktestStatus.COMPLETED.value, BacktestStatus.FAILED.value, BacktestStatus.CANCELLED.value):
+        raise HTTPException(status_code=400, detail=f"Cannot cancel backtest in terminal state '{run.status}'.")
+
+    if run.status == BacktestStatus.QUEUED.value:
+        run.status = BacktestStatus.CANCELLED.value
+        run.cancelled_at = datetime.utcnow()
+        run.error_code = "JOB_CANCELLED"
+        run.error_message = "Backtest was cancelled before execution started."
+    elif run.status == BacktestStatus.RUNNING.value:
+        run.status = BacktestStatus.CANCELLING.value
+
+    await db.commit()
+    await db.refresh(run)
+
+    return BacktestStatusDTO(
+        id=run.id,
+        status=run.status,
+        progress=run.progress or 0.0,
+        processed_bars=run.processed_bars or 0,
+        total_bars=run.total_bars or 0,
+        started_at=run.started_at.isoformat() if run.started_at else None,
+        completed_at=run.completed_at.isoformat() if run.completed_at else None,
+        error_code=run.error_code,
+        error_message=run.error_message
+    )
+
+
 @router.get("/{backtest_id}", response_model=BacktestDetailDTO)
 async def get_backtest(
     backtest_id: str,
     user_id: str = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db)
 ):
+    """Retrieve full quantitative results and trade breakdown for a backtest run."""
     result = await db.execute(
         select(BacktestRunModel)
         .options(
@@ -289,9 +471,13 @@ async def get_backtest(
 
     return BacktestDetailDTO(
         id=run.id,
-        strategy_id=run.strategy_version.strategy.id if run.strategy_version else "",
-        strategy_name=run.strategy_version.strategy.name if run.strategy_version else "Strategy",
+        strategy_id=run.strategy_version.strategy.id if run.strategy_version and run.strategy_version.strategy else "",
+        strategy_name=run.strategy_version.strategy.name if run.strategy_version and run.strategy_version.strategy else "Strategy",
         status=run.status,
+        progress=run.progress or 0.0,
+        run_identity=run.run_identity,
+        engine_version=run.engine_version,
+        error_code=run.error_code,
         error_message=run.error_message,
         initial_capital=run.initial_capital,
         final_capital=run.final_capital,
@@ -301,6 +487,7 @@ async def get_backtest(
         sharpe_ratio=run.sharpe_ratio,
         max_drawdown_percent=run.max_drawdown_percent,
         equity_curve=run.equity_curve_json,
+        execution_metrics=run.execution_metrics_json,
         trades=trades_dto,
         portfolio=portfolio_dto,
         created_at=run.created_at.isoformat()
@@ -522,4 +709,3 @@ async def get_backtest_costs(
         )
         for c in costs
     ]
-

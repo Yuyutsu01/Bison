@@ -19,6 +19,7 @@
 6. **Order & Execution Simulator**: Strongly typed Order domain, state machine lifecycle (`CREATED` -> `PENDING` -> `FILLED`), `NEXT_BAR_OPEN` execution policy, slippage models (`Zero`, `FixedPoints`, `Percentage`), tick size normalization, idempotency protection, and REST API endpoints.
 7. **Portfolio & Risk Engine**: Execution-driven portfolio state machine, weighted average entry price accounting, realized/unrealized P&L tracking, position sizing engine (`FixedQuantity`, `FixedCapital`, `PercentCapital`), risk controls (`StopLoss`, `Target`, `TrailingStop`, `MaxHoldingBars`, `EODExit`, `MaxPositions`), intrabar conflict policy, gap execution rules, ORM persistence, and REST endpoints.
 8. **Indian Transaction Cost & Charges Engine**: Modular, versioned, effective-dated Indian transaction cost engine calculating Brokerage, STT, Exchange Turnover Fees, SEBI Fees, Stamp Duty, and 18% GST (on taxable base), integrated into Portfolio net cash accounting & P&L with full DB persistence, REST endpoints, and UI dashboard.
+9. **Backtest Orchestration & Job Execution Engine**: Production-grade asynchronous simulation orchestration, deterministic SHA-256 run identity hashing, lifecycle state machine (`CREATED` -> `QUEUED` -> `RUNNING` -> `COMPLETED`/`FAILED`/`CANCELLED`), live progress tracking, responsive cancellation tokens, retry policies for transient faults, atomic database persistence, and dashboard integration.
 
 ---
 
@@ -71,7 +72,7 @@ Access services:
 ## 💻 Local Development Commands
 
 ```bash
-pytest apps/api/tests     # Run backend pytest suite (63 tests)
+pytest apps/api/tests     # Run backend pytest suite (84 tests)
 ```
 
 ---

@@ -170,11 +170,27 @@ export interface TransactionCostBreakdownDTO {
   total_cost: number;
 }
 
+export interface BacktestStatusDTO {
+  id: string;
+  status: string;
+  progress: number;
+  processed_bars: number;
+  total_bars: number;
+  started_at?: string;
+  completed_at?: string;
+  error_code?: string;
+  error_message?: string;
+}
+
 export interface BacktestDetailDTO {
   id: string;
   strategy_id: string;
   strategy_name: string;
   status: string;
+  progress?: number;
+  run_identity?: string;
+  engine_version?: string;
+  error_code?: string;
   error_message?: string;
   initial_capital: number;
   final_capital?: number;
@@ -185,6 +201,7 @@ export interface BacktestDetailDTO {
   sharpe_ratio?: number;
   max_drawdown_percent?: number;
   equity_curve?: EquityPointDTO[];
+  execution_metrics?: Record<string, any>;
   trades: TradeDTO[];
   portfolio?: PortfolioDTO;
   positions?: PositionDTO[];
@@ -202,4 +219,15 @@ export async function getBacktestCosts(backtestId: string): Promise<TransactionC
   const response = await apiClient.get<TransactionCostBreakdownDTO[]>(`/backtests/${backtestId}/costs`);
   return response.data;
 }
+
+export async function getBacktestStatus(backtestId: string): Promise<BacktestStatusDTO> {
+  const response = await apiClient.get<BacktestStatusDTO>(`/backtests/${backtestId}/status`);
+  return response.data;
+}
+
+export async function cancelBacktest(backtestId: string): Promise<BacktestStatusDTO> {
+  const response = await apiClient.post<BacktestStatusDTO>(`/backtests/${backtestId}/cancel`);
+  return response.data;
+}
+
 

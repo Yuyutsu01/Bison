@@ -29,9 +29,23 @@ interface Props {
 
 export default function PerformanceDashboard({ data }: Props) {
   const [selectedTrade, setSelectedTrade] = useState<TradeDTO | null>(null);
+  const [currentStatus, setCurrentStatus] = useState<string>(data.status);
+  const [isCancelling, setIsCancelling] = useState<boolean>(false);
 
   const handleExportCSV = () => {
     window.open(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1'}/backtests/${data.id}/export/csv`, '_blank');
+  };
+
+  const handleCancel = async () => {
+    try {
+      setIsCancelling(true);
+      const res = await apiClient.post(`/backtests/${data.id}/cancel`);
+      setCurrentStatus(res.data.status);
+    } catch (err) {
+      console.error('Failed to cancel backtest:', err);
+    } finally {
+      setIsCancelling(false);
+    }
   };
 
   const isProfitable = (data.total_net_pnl || 0) >= 0;
@@ -48,25 +62,51 @@ export default function PerformanceDashboard({ data }: Props) {
             </span>
             <span
               className={`text-xs font-bold px-2.5 py-1 rounded-full border ${
-                data.status === 'COMPLETED'
+                currentStatus === 'COMPLETED'
                   ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-                  : 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20'
+                  : currentStatus === 'FAILED'
+                  ? 'bg-red-500/10 text-red-400 border-red-500/20'
+                  : currentStatus === 'CANCELLED'
+                  ? 'bg-gray-500/10 text-gray-400 border-gray-500/20'
+                  : 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20 animate-pulse'
               }`}
             >
-              {data.status}
+              {currentStatus}
             </span>
+            {data.engine_version && (
+              <span className="text-xs font-mono text-gray-500">
+                {data.engine_version}
+              </span>
+            )}
           </div>
           <p className="text-sm text-gray-400 mt-1">
             Executed on NSE Market Data • Initial Capital: ₹{data.initial_capital.toLocaleString()}
           </p>
+          {data.error_message && (
+            <div className="mt-2 text-xs font-medium text-red-400 bg-red-500/10 p-2.5 rounded-lg border border-red-500/20">
+              <span className="font-bold">Error [{data.error_code || 'FAILED'}]:</span> {data.error_message}
+            </div>
+          )}
         </div>
-        <button
-          onClick={handleExportCSV}
-          className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gray-800 hover:bg-gray-700 text-white text-sm font-medium border border-gray-700 transition-colors"
-        >
-          <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
-          Export Trades CSV
-        </button>
+        <div className="flex items-center gap-3">
+          {(currentStatus === 'QUEUED' || currentStatus === 'RUNNING') && (
+            <button
+              onClick={handleCancel}
+              disabled={isCancelling}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-red-600/20 hover:bg-red-600/30 text-red-400 text-sm font-medium border border-red-500/30 transition-colors"
+            >
+              <X className="w-4 h-4" />
+              {isCancelling ? 'Cancelling...' : 'Cancel Backtest'}
+            </button>
+          )}
+          <button
+            onClick={handleExportCSV}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gray-800 hover:bg-gray-700 text-white text-sm font-medium border border-gray-700 transition-colors"
+          >
+            <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
+            Export Trades CSV
+          </button>
+        </div>
       </div>
 
       {/* Quantitative Metric Cards */}
