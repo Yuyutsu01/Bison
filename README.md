@@ -9,7 +9,7 @@
 
 ---
 
-## 🌟 Core Platform Capabilities
+## Core Platform Capabilities
 
 1. **Foundation & Infrastructure**: Monorepo infrastructure, Next.js frontend, FastAPI backend, PostgreSQL, Redis, worker infrastructure, Docker Compose, CI pipeline.
 2. **Instruments & Market Data**: Instrument model, NSE instruments, NIFTY/BANKNIFTY fixtures, CSV ingestion, data validation, missing candle detection, OHLCV normalization.
@@ -23,7 +23,7 @@
 
 ---
 
-## 🏛️ System Architecture
+##  System Architecture
 
 ```mermaid
 graph TD
@@ -44,7 +44,7 @@ graph TD
 
 ---
 
-## 🚀 Quick Start (Local Setup)
+## Quick Start (Local Setup)
 
 ### Prerequisites
 - Docker & Docker Compose
@@ -69,7 +69,7 @@ Access services:
 
 ---
 
-## 💻 Local Development Commands
+## Local Development Commands
 
 ```bash
 pytest apps/api/tests     # Run backend pytest suite (84 tests)
@@ -77,7 +77,7 @@ pytest apps/api/tests     # Run backend pytest suite (84 tests)
 
 ---
 
-## 📁 Repository Structure
+##  Repository Structure
 
 ```text
 Bison/
